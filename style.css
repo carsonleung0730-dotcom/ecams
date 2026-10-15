@@ -1,0 +1,32 @@
+/* Container Box */
+.calendar-container {
+    max-width: 800px;
+    margin: 40px auto;
+    padding: 20px;
+    background: #ffffff;
+    border-radius: 12px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.06);
+    border: 1px solid #e2e8f0;
+}
+
+/* List Table & Item Styling */
+.fc-list-day-cushion {
+    background-color: #f8fafc !important; /* Soft grey header per day */
+}
+
+.fc-list-event {
+    cursor: pointer;
+    font-size: 0.95rem;
+    font-weight: 500;
+}
+
+/* List event title text */
+.fc-list-event-title a {
+    color: #1e293b !important;
+    text-decoration: none;
+}
+
+/* Dot icon color beside each activity */
+.fc-list-event-dot {
+    border-color: #2563eb !important; /* Primary accent color */
+}
