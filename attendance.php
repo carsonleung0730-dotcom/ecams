@@ -1,8 +1,7 @@
 <?php
 session_start();
 
-$host = 'localhost';$dbname = 'ecams';
-$username = 'root';$password = '';
+require_once 'db.php';
 
 try {
     $pdo = new PDO("mysql:host=$host;dbname=$dbname;charset=utf8mb4", $username,$password, [
