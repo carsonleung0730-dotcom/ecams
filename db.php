@@ -1,4 +1,7 @@
 <?php
+ini_set('display_errors', 1);
+ini_set('display_startup_errors', 1);
+error_reporting(E_ALL);
 $host = 'ecams-do-user-46407401-0.m.db.ondigitalocean.com';
 $username = 'doadmin';
 $password = 'AVNS_U3ocRtBD80-OAEuGdHs';
