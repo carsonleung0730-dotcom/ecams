@@ -2,10 +2,7 @@
 session_start();
 
 // Database configuration
-$host = 'localhost';
-$dbname = 'ecams';
-$username = 'root'; // Replace with your MySQL username
-$password = '';     // Replace with your MySQL password
+require_once 'db.php';    // Replace with your MySQL password
 if (!isset($_SESSION['role']) || strtolower($_SESSION['role']) !== 'admin') {
     // Redirect unauthorized users to an error page or their respective dashboard
     header('Location: unauthorized.php');
