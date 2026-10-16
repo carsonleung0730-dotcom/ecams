@@ -1,23 +1,24 @@
 <?php
+ini_set('session.use_strict_mode', 1);
+session_set_cookie_params([
+    'lifetime' => 86400,
+    'path' => '/',
+    'secure' => true,
+    'httponly' => true,
+    'samesite' => 'Lax'
+]);
 session_start();
 
 require_once 'db.php';
-if (!isset($_SESSION['role']) || strtolower($_SESSION['role']) !== 'admin') {
-    // Redirect unauthorized users to an error page or their respective dashboard
+
+if (!isset($_SESSION['role']) || strtolower(trim($_SESSION['role'])) !== 'admin') {
     header('Location: unauthorized.php');
     exit();
 }
+
 if (!isset($_SESSION['uid']) && !isset($_SESSION['user_id'])) {
-    header('Location: login.php');
+    header('Location: shit.php');
     exit();
-}
-try {
-    $pdo = new PDO("mysql:host=$host;dbname=$dbname;charset=utf8mb4", $username, $password, [
-        PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-        PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC
-    ]);
-} catch (PDOException $e) {
-    die("Database Connection Failed: " . $e->getMessage());
 }
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'save_image') {
