@@ -1,11 +1,12 @@
 <?php
 session_start();
+echo "<pre>";
+print_r($_SESSION);
+echo "</pre>";
+exit();
 
 // Database configuration
 require_once 'db.php';  
-session_start();
-echo "Logged in role is: " . (isset($_SESSION['role']) ? $_SESSION['role'] : 'NOT SET');
-exit();
 if (!isset($_SESSION['role']) || strtolower($_SESSION['role']) !== 'admin') {
     // Redirect unauthorized users to an error page or their respective dashboard
     header('Location: unauthorized.php');
