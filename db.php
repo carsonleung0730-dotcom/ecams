@@ -5,7 +5,7 @@ error_reporting(E_ALL);
 $host = 'ecams-do-user-46407401-0.m.db.ondigitalocean.com';
 $username = 'doadmin';
 $password = 'AVNS_U3ocRtBD80-OAEuGdHs';
-$database = 'ecams';
+$dbname = 'ecams';
 $port = 25060;
 
 $conn = mysqli_init();
