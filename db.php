@@ -1,8 +1,9 @@
 <?php
-$host = '127.0.0.1';
-$dbname = 'ecams'; // Updated database name
-$username = 'root';
-$password = ''; // Default Laragon MySQL password is empty
+$$host = 'ecams-do-user-46407401-0.m.db.ondigitalocean.com';
+$port = '25060';
+$dbname = 'ecams';
+$username = 'doadmin';
+$password = 'AVNS_U3ocRtBD80-OAEuGdHs';// Default Laragon MySQL password is empty
 
 try {
     $pdo = new PDO("mysql:host=$host;dbname=$dbname;charset=utf8mb4", $username, $password, [
