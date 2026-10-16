@@ -1,10 +1,7 @@
 <?php
 session_start();
 
-$host = 'localhost';
-$dbname = 'ecams';
-$username = 'root';
-$password = '';
+require_once 'db.php';
 if (!isset($_SESSION['role']) || strtolower($_SESSION['role']) !== 'teacher') {
     // Redirect unauthorized users to an error page or their respective dashboard
     header('Location: unauthorized.php');
