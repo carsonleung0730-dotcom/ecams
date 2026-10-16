@@ -1,20 +1,13 @@
 <?php
 $host = 'ecams-do-user-46407401-0.m.db.ondigitalocean.com';
-$port = '25060';
-$dbname = 'ecams';
 $username = 'doadmin';
 $password = 'AVNS_U3ocRtBD80-OAEuGdHs';
+$database = 'ecams';
+$port = 25060;
 
-try {
-    $dsn = "mysql:host=$host;port=$port;dbname=$dbname;charset=utf8mb4";
-    $options = [
-        PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-        PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-        PDO::MYSQL_ATTR_SSL_VERIFY_SERVER_CERT => false,
-    ];
-    
-    $pdo = new PDO($dsn, $username, $password, $options);
-} catch (\PDOException $e) {
-    die("Database Connection Failed: " . $e->getMessage());
+$conn = mysqli_init();
+
+if (!@mysqli_real_connect($conn, $host, $username, $password, $database, $port, NULL, MYSQLI_CLIENT_SSL)) {
+    die("Database Connection Failed: " . mysqli_connect_error());
 }
 ?>
