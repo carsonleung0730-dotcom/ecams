@@ -21,6 +21,7 @@ if (!isset($_SESSION['uid']) && !isset($_SESSION['user_id'])) {
     exit();
 }
 
+// --- AJAX: SAVE IMAGE ---
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'save_image') {
     header('Content-Type: application/json');
     $oid = preg_replace('/[^a-zA-Z0-9_-]/', '_', $_POST['oid']);
@@ -43,6 +44,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     exit;
 }
 
+// --- AJAX: DELETE IMAGE ---
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'delete_image') {
     header('Content-Type: application/json');
     $oid = preg_replace('/[^a-zA-Z0-9_-]/', '_', $_POST['oid'] ?? '');
@@ -60,6 +62,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     exit;
 }
 
+// --- AJAX: CREATE ORG ---
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'create_org') {
     header('Content-Type: application/json');
     $oid = trim($_POST['oid'] ?? '');
@@ -73,55 +76,74 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         exit;
     }
 
-    $chk = $pdo->prepare("SELECT COUNT(*) FROM organisations WHERE oid = ?");
-    $chk->execute([$oid]);
-    if ($chk->fetchColumn() > 0) {
+    $chk = $conn->prepare("SELECT COUNT(*) FROM organisations WHERE oid = ?");
+    $chk->bind_param("s", $oid);
+    $chk->execute();
+    $chk->bind_result($count);
+    $chk->fetch();
+    $chk->close();
+
+    if ($count > 0) {
         echo json_encode(['success' => false, 'message' => 'Organisation ID already exists.']);
         exit;
     }
 
+    $conn->begin_transaction();
     try {
-        $pdo->beginTransaction();
-
-        $stmt = $pdo->prepare("INSERT INTO organisations (oid, oname, tid) VALUES (?, ?, ?)");
-        $stmt->execute([$oid, $oname, empty($tid) ? null : $tid]);
+        $stmt = $conn->prepare("INSERT INTO organisations (oid, oname, tid) VALUES (?, ?, ?)");
+        $finalTid = empty($tid) ? null : $tid;
+        $stmt->bind_param("sss", $oid, $oname, $finalTid);
+        $stmt->execute();
+        $stmt->close();
 
         if (!empty($members)) {
-            $memStmt = $pdo->prepare("INSERT INTO membership (oid, sid) VALUES (?, ?)");
+            $memStmt = $conn->prepare("INSERT INTO membership (oid, sid) VALUES (?, ?)");
             foreach ($members as $sid) {
-                $memStmt->execute([$oid, $sid]);
+                $memStmt->bind_param("ss", $oid, $sid);
+                $memStmt->execute();
             }
+            $memStmt->close();
         }
 
         if (!empty($monitors)) {
-            $monStmt = $pdo->prepare("INSERT INTO monitor (oid, mid) VALUES (?, ?)");
+            $monStmt = $conn->prepare("INSERT INTO monitor (oid, mid) VALUES (?, ?)");
             foreach ($monitors as $mid) {
-                $monStmt->execute([$oid, $mid]);
+                $monStmt->bind_param("ss", $oid, $mid);
+                $monStmt->execute();
             }
+            $monStmt->close();
         }
 
-        $pdo->commit();
+        $conn->commit();
         echo json_encode(['success' => true]);
     } catch (Exception $e) {
-        $pdo->rollBack();
+        $conn->rollback();
         echo json_encode(['success' => false, 'message' => $e->getMessage()]);
     }
     exit;
 }
 
+// --- AJAX: DELETE ORG ---
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'delete_org') {
     header('Content-Type: application/json');
     $oid = trim($_POST['oid'] ?? '');
+    
+    $conn->begin_transaction();
     try {
-        $pdo->beginTransaction();
-        $delMon = $pdo->prepare("DELETE FROM monitor WHERE oid = ?");
-        $delMon->execute([$oid]);
+        $delMon = $conn->prepare("DELETE FROM monitor WHERE oid = ?");
+        $delMon->bind_param("s", $oid);
+        $delMon->execute();
+        $delMon->close();
 
-        $delMem = $pdo->prepare("DELETE FROM membership WHERE oid = ?");
-        $delMem->execute([$oid]);
+        $delMem = $conn->prepare("DELETE FROM membership WHERE oid = ?");
+        $delMem->bind_param("s", $oid);
+        $delMem->execute();
+        $delMem->close();
 
-        $delOrg = $pdo->prepare("DELETE FROM organisations WHERE oid = ?");
-        $delOrg->execute([$oid]);
+        $delOrg = $conn->prepare("DELETE FROM organisations WHERE oid = ?");
+        $delOrg->bind_param("s", $oid);
+        $delOrg->execute();
+        $delOrg->close();
 
         $safeOid = preg_replace('/[^a-zA-Z0-9_-]/', '_', $oid);
         $filePath = "uploads/org_{$safeOid}.png";
@@ -129,15 +151,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             unlink($filePath);
         }
 
-        $pdo->commit();
+        $conn->commit();
         echo json_encode(['success' => true]);
     } catch (Exception $e) {
-        $pdo->rollBack();
+        $conn->rollback();
         echo json_encode(['success' => false, 'message' => $e->getMessage()]);
     }
     exit;
 }
 
+// --- AJAX: UPDATE ORG ---
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'update_org') {
     header('Content-Type: application/json');
     $oldOid = trim($_POST['old_oid'] ?? '');
@@ -153,26 +176,37 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     }
 
     if ($oldOid !== $newOid) {
-        $chk = $pdo->prepare("SELECT COUNT(*) FROM organisations WHERE oid = ?");
-        $chk->execute([$newOid]);
-        if ($chk->fetchColumn() > 0) {
+        $chk = $conn->prepare("SELECT COUNT(*) FROM organisations WHERE oid = ?");
+        $chk->bind_param("s", $newOid);
+        $chk->execute();
+        $chk->bind_result($count);
+        $chk->fetch();
+        $chk->close();
+
+        if ($count > 0) {
             echo json_encode(['success' => false, 'message' => 'Organisation ID already exists.']);
             exit;
         }
     }
 
+    $conn->begin_transaction();
     try {
-        $pdo->beginTransaction();
-
+        $finalTid = empty($tid) ? null : $tid;
         if ($oldOid !== $newOid) {
-            $updMonOid = $pdo->prepare("UPDATE monitor SET oid = ? WHERE oid = ?");
-            $updMonOid->execute([$newOid, $oldOid]);
+            $updMonOid = $conn->prepare("UPDATE monitor SET oid = ? WHERE oid = ?");
+            $updMonOid->bind_param("ss", $newOid, $oldOid);
+            $updMonOid->execute();
+            $updMonOid->close();
 
-            $updMemOid = $pdo->prepare("UPDATE membership SET oid = ? WHERE oid = ?");
-            $updMemOid->execute([$newOid, $oldOid]);
+            $updMemOid = $conn->prepare("UPDATE membership SET oid = ? WHERE oid = ?");
+            $updMemOid->bind_param("ss", $newOid, $oldOid);
+            $updMemOid->execute();
+            $updMemOid->close();
 
-            $updOrg = $pdo->prepare("UPDATE organisations SET oid = ?, oname = ?, tid = ? WHERE oid = ?");
-            $updOrg->execute([$newOid, $oname, empty($tid) ? null : $tid, $oldOid]);
+            $updOrg = $conn->prepare("UPDATE organisations SET oid = ?, oname = ?, tid = ? WHERE oid = ?");
+            $updOrg->bind_param("ssss", $newOid, $oname, $finalTid, $oldOid);
+            $updOrg->execute();
+            $updOrg->close();
 
             $oldImg = "uploads/org_" . preg_replace('/[^a-zA-Z0-9_-]/', '_', $oldOid) . ".png";
             $newImg = "uploads/org_" . preg_replace('/[^a-zA-Z0-9_-]/', '_', $newOid) . ".png";
@@ -180,80 +214,102 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                 rename($oldImg, $newImg);
             }
         } else {
-            $stmt = $pdo->prepare("UPDATE organisations SET oname = ?, tid = ? WHERE oid = ?");
-            $stmt->execute([$oname, empty($tid) ? null : $tid, $oldOid]);
+            $stmt = $conn->prepare("UPDATE organisations SET oname = ?, tid = ? WHERE oid = ?");
+            $stmt->bind_param("sss", $oname, $finalTid, $oldOid);
+            $stmt->execute();
+            $stmt->close();
         }
 
-        $delMon = $pdo->prepare("DELETE FROM monitor WHERE oid = ?");
-        $delMon->execute([$newOid]);
+        $delMon = $conn->prepare("DELETE FROM monitor WHERE oid = ?");
+        $delMon->bind_param("s", $newOid);
+        $delMon->execute();
+        $delMon->close();
 
-        $delMem = $pdo->prepare("DELETE FROM membership WHERE oid = ?");
-        $delMem->execute([$newOid]);
+        $delMem = $conn->prepare("DELETE FROM membership WHERE oid = ?");
+        $delMem->bind_param("s", $newOid);
+        $delMem->execute();
+        $delMem->close();
 
         if (!empty($members)) {
-            $memStmt = $pdo->prepare("INSERT INTO membership (oid, sid) VALUES (?, ?)");
+            $memStmt = $conn->prepare("INSERT INTO membership (oid, sid) VALUES (?, ?)");
             foreach ($members as $sid) {
-                $memStmt->execute([$newOid, $sid]);
+                $memStmt->bind_param("ss", $newOid, $sid);
+                $memStmt->execute();
             }
+            $memStmt->close();
         }
 
         if (!empty($monitors)) {
-            $monStmt = $pdo->prepare("INSERT INTO monitor (oid, mid) VALUES (?, ?)");
+            $monStmt = $conn->prepare("INSERT INTO monitor (oid, mid) VALUES (?, ?)");
             foreach ($monitors as $mid) {
-                $monStmt->execute([$newOid, $mid]);
+                $monStmt->bind_param("ss", $newOid, $mid);
+                $monStmt->execute();
             }
+            $monStmt->close();
         }
 
-        $pdo->commit();
+        $conn->commit();
         echo json_encode(['success' => true]);
     } catch (Exception $e) {
-        $pdo->rollBack();
+        $conn->rollback();
         echo json_encode(['success' => false, 'message' => $e->getMessage()]);
     }
     exit;
 }
 
+// --- FETCH DATA FOR PAGE DISPLAY ---
 $teachersList = [];
-try {
-    $tStmt = $pdo->query("SELECT uid, name FROM users WHERE role IN ('teacher', 'admin') ORDER BY CAST(uid AS UNSIGNED) ASC, uid ASC");
-    $teachersList = $tStmt->fetchAll();
-} catch (PDOException $e) {
-    $teachersList = [];
+$tRes = $conn->query("SELECT uid, name FROM users WHERE role IN ('teacher', 'admin') ORDER BY CAST(uid AS UNSIGNED) ASC, uid ASC");
+if ($tRes) {
+    while ($row = $tRes->fetch_assoc()) {
+        $teachersList[] = $row;
+    }
 }
 
 $studentsList = [];
-try {
-    $sStmt = $pdo->query("SELECT uid, name FROM users WHERE role = 'student' ORDER BY CAST(uid AS UNSIGNED) ASC, uid ASC");
-    $studentsList = $sStmt->fetchAll();
-} catch (PDOException $e) {
-    $studentsList = [];
+$sRes = $conn->query("SELECT uid, name FROM users WHERE role = 'student' ORDER BY CAST(uid AS UNSIGNED) ASC, uid ASC");
+if ($sRes) {
+    while ($row = $sRes->fetch_assoc()) {
+        $studentsList[] = $row;
+    }
 }
 
 $orgsData = [];
-try {
-    $orgStmt = $pdo->query("
-        SELECT o.oid, o.oname, o.tid, u.name AS teacher_name
-        FROM organisations o
-        LEFT JOIN users u ON o.tid = u.uid
-        ORDER BY o.oid ASC
-    ");
-    $orgsRaw = $orgStmt->fetchAll();
+$orgQuery = "
+    SELECT o.oid, o.oname, o.tid, u.name AS teacher_name
+    FROM organisations o
+    LEFT JOIN users u ON o.tid = u.uid
+    ORDER BY o.oid ASC
+";
+$orgRes = $conn->query($orgQuery);
+if ($orgRes) {
+    while ($org = $orgRes->fetch_assoc()) {
+        $monStmt = $conn->prepare("SELECT mid FROM monitor WHERE oid = ?");
+        $monStmt->bind_param("s", $org['oid']);
+        $monStmt->execute();
+        $monRes = $monStmt->get_result();
+        $org['monitors'] = [];
+        while ($mRow = $monRes->fetch_assoc()) {
+            $org['monitors'][] = $mRow['mid'];
+        }
+        $monStmt->close();
 
-    foreach ($orgsRaw as $org) {
-        $monStmt = $pdo->prepare("SELECT mid FROM monitor WHERE oid = ?");
-        $monStmt->execute([$org['oid']]);
-        $org['monitors'] = array_column($monStmt->fetchAll(), 'mid');
-
-        $memStmt = $pdo->prepare("
+        $memStmt = $conn->prepare("
             SELECT u.uid, u.name 
             FROM membership m
             JOIN users u ON m.sid = u.uid
             WHERE m.oid = ?
             ORDER BY CAST(u.uid AS UNSIGNED) ASC, u.uid ASC
         ");
-        $memStmt->execute([$org['oid']]);
-        $org['members'] = $memStmt->fetchAll();
-        
+        $memStmt->bind_param("s", $org['oid']);
+        $memStmt->execute();
+        $memRes = $memStmt->get_result();
+        $org['members'] = [];
+        while ($memRow = $memRes->fetch_assoc()) {
+            $org['members'][] = $memRow;
+        }
+        $memStmt->close();
+
         usort($org['members'], function($a, $b) use ($org) {
             $aIsMon = in_array($a['uid'], $org['monitors']);
             $bIsMon = in_array($b['uid'], $org['monitors']);
@@ -265,11 +321,9 @@ try {
         $safeOid = preg_replace('/[^a-zA-Z0-9_-]/', '_', $org['oid']);
         $existingImg = "uploads/org_{$safeOid}.png";
         $org['image_path'] = file_exists($existingImg) ? $existingImg : '';
-        
+
         $orgsData[] = $org;
     }
-} catch (PDOException $e) {
-    $orgsData = [];
 }
 ?>
 <!DOCTYPE html>
