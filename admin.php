@@ -10,11 +10,6 @@ session_set_cookie_params([
 session_start();
 // Database configuration
 require_once 'db.php';  
-if (!isset($_SESSION['role']) || strtolower($_SESSION['role']) !== 'admin') {
-    // Redirect unauthorized users to an error page or their respective dashboard
-    header('Location: unauthorized.php');
-    exit();
-}
 try {
     $pdo = new PDO("mysql:host=$host;dbname=$dbname;charset=utf8mb4", $username, $password, [
         PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
