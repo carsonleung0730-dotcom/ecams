@@ -3,7 +3,6 @@ session_start();
 
 // Database configuration
 require_once 'db.php';  
-echo "Current Role: " . (isset($_SESSION['role']) ? $_SESSION['role'] : 'Not Set');// Replace with your MySQL password
 if (!isset($_SESSION['role']) || strtolower($_SESSION['role']) !== 'admin') {
     // Redirect unauthorized users to an error page or their respective dashboard
     header('Location: unauthorized.php');
