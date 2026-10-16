@@ -1,4 +1,12 @@
 <?php
+ini_set('session.use_strict_mode', 1);
+session_set_cookie_params([
+    'lifetime' => 86400,
+    'path' => '/',
+    'secure' => true, // Enforces HTTPS cookie transmission
+    'httponly' => true,
+    'samesite' => 'Lax'
+]);
 session_start();
 echo "<pre>";
 print_r($_SESSION);
