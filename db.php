@@ -13,4 +13,5 @@ $conn = mysqli_init();
 if (!@mysqli_real_connect($conn, $host, $username, $password, $database, $port, NULL, MYSQLI_CLIENT_SSL)) {
     die("Database Connection Failed: " . mysqli_connect_error());
 }
+    mysqli_select_db($conn, $dbname);
 ?>
