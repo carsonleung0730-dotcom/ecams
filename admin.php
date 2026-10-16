@@ -8,11 +8,6 @@ session_set_cookie_params([
     'samesite' => 'Lax'
 ]);
 session_start();
-echo "<pre>";
-print_r($_SESSION);
-echo "</pre>";
-exit();
-
 // Database configuration
 require_once 'db.php';  
 if (!isset($_SESSION['role']) || strtolower($_SESSION['role']) !== 'admin') {
