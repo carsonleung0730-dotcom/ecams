@@ -40,7 +40,6 @@ $user = $result->fetch_assoc();
 
     // Validate credentials
     if ($user && password_verify($password, $user['password'])) {
-        session_regenerate_id(true);
 
         $_SESSION['uid']   = $user['uid'];
         $_SESSION['uname'] = $user['name'];
