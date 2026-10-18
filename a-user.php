@@ -1,9 +1,9 @@
 <?php
-require_once 'db.php';
+// Database configuration loaded BEFORE session_start()
+require_once 'db.php';   
+
 session_start();
 
-// Database configuration
-  
 if (!isset($_SESSION['role']) || strtolower($_SESSION['role']) !== 'admin') {
     header('Location: unauthorized.php');
     exit();
@@ -13,14 +13,16 @@ if (!isset($_SESSION['uid']) && !isset($_SESSION['user_id'])) {
     exit();
 }
 
-// FIXED PDO CONNECTION WITH PORT AND DIGITALOCEAN SSL ATTRIBUTES
+// PHP 8.5 Deprecation Fix for SSL Verification Attribute
+$sslVerifyAttr = class_exists('Pdo\\Mysql') ? \Pdo\Mysql::ATTR_SSL_VERIFY_SERVER_CERT : PDO::MYSQL_ATTR_SSL_VERIFY_SERVER_CERT;
+
 try {
-    $port = $port ?? 25060; // Fallback to DigitalOcean port if not defined in db.php
+    $port = $port ?? 25060; 
     $dsn = "mysql:host=$host;port=$port;dbname=$dbname;charset=utf8mb4";
     $options = [
         PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
         PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-        PDO::MYSQL_ATTR_SSL_VERIFY_SERVER_CERT => false
+        $sslVerifyAttr => false
     ];
     $pdo = new PDO($dsn, $username, $password, $options);
 } catch (PDOException $e) {
@@ -46,7 +48,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $sat      = isset($_POST['opt_satisfactory']) ? true : false;
         $satOrgs  = $_POST['opt_satisfactory_orgs'] ?? [];
 
-        // Verify user exists and is a student
         $stmt = $pdo->prepare("SELECT * FROM users WHERE uid = :uid AND LOWER(role) = 'student'");
         $stmt->execute([':uid' => $uid]);
         $student = $stmt->fetch();
@@ -55,7 +56,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             die("Error: PDF report generation is strictly restricted to users with the 'student' role.");
         }
 
-        // Fetch enrolled organisations key-value map [oid => oname]
         $orgStmt = $pdo->prepare("
             SELECT o.oid, o.oname 
             FROM membership m 
@@ -70,7 +70,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
         $allOrgIds = array_keys($orgMap);
 
-        // Fetch activities for a single organisation
         $getOrgActivities = function($oid) use ($pdo, $start, $end) {
             $actQuery = "
                 SELECT a.aid, a.oid, a.aname, a.date, a.room 
@@ -83,7 +82,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             return $actStmt->fetchAll();
         };
 
-        // Fetch activities across all target orgs combined
         $getAllActivities = function($targetOids) use ($pdo, $start, $end) {
             if (empty($targetOids)) return [];
             $placeholders = implode(',', array_fill(0, count($targetOids), '?'));
@@ -99,7 +97,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             return $actStmt->fetchAll();
         };
 
-        // Helper function to convert integer to Roman numerals
         $toRoman = function($num) {
             $map = [
                 1 => 'I', 2 => 'II', 3 => 'III', 4 => 'IV', 5 => 'V',
@@ -108,7 +105,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             return $map[$num] ?? $num;
         };
 
-        // Fetch attendance records for this student using sid
         $attendanceMap = [];
         if (!empty($allOrgIds)) {
             $attStmt = $pdo->prepare("
@@ -122,11 +118,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
         }
 
-        // Output PDF Headers
         header('Content-Type: application/pdf');
         header('Content-Disposition: attachment; filename="Student_Report_' . $uid . '.pdf"');
 
-        // Build PDF text elements
         $pdfCommands = [];
         
         $pdfCommands[] = ["font" => "F1", "size" => 16, "x" => 80, "y" => 730, "text" => "ECAMS STUDENT REPORT"];
@@ -154,7 +148,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         $sectionCounter = 1;
 
-        // 1. Attendance Record Section
         if ($att) {
             $pdfCommands[] = ["font" => "F1", "size" => 12, "x" => 40, "y" => $y, "text" => $toRoman($sectionCounter) . ". Attendance Record:"];
             $y -= 18;
@@ -234,7 +227,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $sectionCounter++;
         }
 
-        // 2. Average Participation Rating Section
         if ($part && $y > 60) {
             $pdfCommands[] = ["font" => "F1", "size" => 12, "x" => 40, "y" => $y, "text" => $toRoman($sectionCounter) . ". Average Participation Rating:"];
             $y -= 18;
@@ -314,7 +306,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $sectionCounter++;
         }
 
-        // 3. Average Satisfactory Rating Section
         if ($sat && $y > 60) {
             $pdfCommands[] = ["font" => "F1", "size" => 12, "x" => 40, "y" => $y, "text" => $toRoman($sectionCounter) . ". Average Satisfactory Rating:"];
             $y -= 18;
@@ -422,7 +413,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         exit;
     }
 
-    // Handle AJAX JSON Requests
     if (isset($_SERVER['CONTENT_TYPE']) && strpos($_SERVER['CONTENT_TYPE'], 'application/json') !== false) {
         header('Content-Type: application/json');
         $data = json_decode(file_get_contents('php://input'), true);
@@ -2009,6 +1999,7 @@ try {
             for (let i = 0; i < qty; i++) {
                 const rowDiv = document.createElement('div');
                 rowDiv.className = 'add-row-item';
+                // 'monitor' option removed from dropdown list below
                 rowDiv.innerHTML = `
                     <input type="text" placeholder="UID" class="new-uid" required>
                     <input type="text" placeholder="Name" class="new-name" required>
@@ -2021,7 +2012,6 @@ try {
                     <input type="password" placeholder="Password" class="new-password">
                     <select class="new-role">
                         <option value="student" selected>student</option>
-                        <option value="monitor">monitor</option>
                         <option value="teacher">teacher</option>
                         <option value="admin">admin</option>
                     </select>
