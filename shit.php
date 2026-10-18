@@ -51,7 +51,7 @@ $user = $result->fetch_assoc();
 
         $role = strtolower(trim($user['role']));
         $_SESSION['role']  = $role;
-
+        session_write_close();
         switch ($role) {
             case 'admin':
                 header("Location: admin.php");
