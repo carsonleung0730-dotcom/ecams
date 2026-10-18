@@ -1,10 +1,9 @@
 <?php
-// Database configuration loaded BEFORE session_start()
-require_once 'db.php';   
-
 session_start();
 
+require_once 'db.php';
 if (!isset($_SESSION['role']) || strtolower($_SESSION['role']) !== 'admin') {
+    // Redirect unauthorized users to an error page or their respective dashboard
     header('Location: unauthorized.php');
     exit();
 }
@@ -13,588 +12,294 @@ if (!isset($_SESSION['uid']) && !isset($_SESSION['user_id'])) {
     exit();
 }
 
-// -------------------------------------------------------------------------
-// 1. BACKEND HANDLERS (AJAX & PDF GENERATION)
-// -------------------------------------------------------------------------
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    // Handle PDF Export Request (Restricted to Student role)
-    if (isset($_POST['action']) && $_POST['action'] === 'export_pdf') {
-        $uid      = $_POST['export_uid'] ?? '';
-        $start    = $_POST['export_start'] ?? '2026-09-01';
-        $end      = $_POST['export_end'] ?? date('Y-m-d');
-        
-        $att      = isset($_POST['opt_attendance']) ? true : false;
-        $attOrgs  = $_POST['opt_attendance_orgs'] ?? [];
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'save_image') {
+    header('Content-Type: application/json');
+    $oid = preg_replace('/[^a-zA-Z0-9_-]/', '_', $_POST['oid']);
+    $imageData = $_POST['image'];
 
-        $part     = isset($_POST['opt_participation']) ? true : false;
-        $partOrgs = $_POST['opt_participation_orgs'] ?? [];
+    if (!is_dir('uploads')) {
+        mkdir('uploads', 0777, true);
+    }
 
-        $sat      = isset($_POST['opt_satisfactory']) ? true : false;
-        $satOrgs  = $_POST['opt_satisfactory_orgs'] ?? [];
+    list($type, $imageData) = explode(';', $imageData);
+    list(, $imageData) = explode(',', $imageData);
+    $decodedData = base64_decode($imageData);
 
-        $stmt = $conn->prepare("SELECT * FROM users WHERE uid = ? AND LOWER(role) = 'student'");
-        $stmt->bind_param("s", $uid);
+    $filePath = "uploads/org_{$oid}.png";
+    if (file_put_contents($filePath, $decodedData)) {
+        echo json_encode(['success' => true, 'path' => $filePath]);
+    } else {
+        echo json_encode(['success' => false, 'message' => 'Failed to save image file.']);
+    }
+    exit;
+}
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'delete_image') {
+    header('Content-Type: application/json');
+    $oid = preg_replace('/[^a-zA-Z0-9_-]/', '_', $_POST['oid'] ?? '');
+    $filePath = "uploads/org_{$oid}.png";
+    
+    if (file_exists($filePath)) {
+        if (unlink($filePath)) {
+            echo json_encode(['success' => true]);
+        } else {
+            echo json_encode(['success' => false, 'message' => 'Failed to delete image file.']);
+        }
+    } else {
+        echo json_encode(['success' => true]);
+    }
+    exit;
+}
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'create_org') {
+    header('Content-Type: application/json');
+    $oid = trim($_POST['oid'] ?? '');
+    $oname = trim($_POST['oname'] ?? '');
+    $tid = trim($_POST['tid'] ?? null);
+    $members = $_POST['members'] ?? [];
+    $monitors = $_POST['monitors'] ?? [];
+
+    if (empty($oid) || empty($oname)) {
+        echo json_encode(['success' => false, 'message' => 'Organisation ID and Name are required.']);
+        exit;
+    }
+
+    $chk = $conn->prepare("SELECT COUNT(*) FROM organisations WHERE oid = ?");
+    $chk->bind_param("s", $oid);
+    $chk->execute();
+    $chk->bind_result($count);
+    $chk->fetch();
+    $chk->close();
+
+    if ($count > 0) {
+        echo json_encode(['success' => false, 'message' => 'Organisation ID already exists.']);
+        exit;
+    }
+
+    $conn->begin_transaction();
+    try {
+        $stmt = $conn->prepare("INSERT INTO organisations (oid, oname, tid) VALUES (?, ?, ?)");
+        $finalTid = empty($tid) ? null : $tid;
+        $stmt->bind_param("sss", $oid, $oname, $finalTid);
         $stmt->execute();
-        $student = $stmt->get_result()->fetch_assoc();
+        $stmt->close();
 
-        if (!$student) {
-            die("Error: PDF report generation is strictly restricted to users with the 'student' role.");
+        if (!empty($members)) {
+            $memStmt = $conn->prepare("INSERT INTO membership (oid, sid) VALUES (?, ?)");
+            foreach ($members as $sid) {
+                $memStmt->bind_param("ss", $oid, $sid);
+                $memStmt->execute();
+            }
+            $memStmt->close();
         }
 
-        $orgStmt = $conn->prepare("
-            SELECT o.oid, o.oname 
-            FROM membership m 
-            JOIN organisations o ON m.oid = o.oid 
-            WHERE m.sid = ?
-        ");
-        $orgStmt->bind_param("s", $uid);
-        $orgStmt->execute();
-        $enrolledOrgsRaw = $orgStmt->get_result()->fetch_all(MYSQLI_ASSOC);
-        $orgMap = [];
-        foreach ($enrolledOrgsRaw as $o) {
-            $orgMap[$o['oid']] = $o['oname'];
-        }
-        $allOrgIds = array_keys($orgMap);
-
-        $getOrgActivities = function($oid) use ($conn, $start, $end) {
-            $actQuery = "
-                SELECT a.aid, a.oid, a.aname, a.date, a.room 
-                FROM activity a 
-                WHERE a.oid = ? AND a.date BETWEEN ? AND ?
-                ORDER BY a.date ASC
-            ";
-            $actStmt = $conn->prepare($actQuery);
-            $actStmt->bind_param("sss", $oid, $start, $end);
-            $actStmt->execute();
-            return $actStmt->get_result()->fetch_all(MYSQLI_ASSOC);
-        };
-
-        $getAllActivities = function($targetOids) use ($conn, $start, $end) {
-            if (empty($targetOids)) return [];
-            $placeholders = implode(',', array_fill(0, count($targetOids), '?'));
-            $types = str_repeat('s', count($targetOids)) . 'ss';
-            $actQuery = "
-                SELECT a.aid, a.oid, a.aname, a.date, a.room 
-                FROM activity a 
-                WHERE a.oid IN ($placeholders) AND a.date BETWEEN ? AND ?
-                ORDER BY a.date ASC
-            ";
-            $params = array_merge($targetOids, [$start, $end]);
-            $actStmt = $conn->prepare($actQuery);
-            $actStmt->bind_param($types, ...$params);
-            $actStmt->execute();
-            return $actStmt->get_result()->fetch_all(MYSQLI_ASSOC);
-        };
-
-        $toRoman = function($num) {
-            $map = [
-                1 => 'I', 2 => 'II', 3 => 'III', 4 => 'IV', 5 => 'V',
-                6 => 'VI', 7 => 'VII', 8 => 'VIII', 9 => 'IX', 10 => 'X'
-            ];
-            return $map[$num] ?? $num;
-        };
-
-        $attendanceMap = [];
-        if (!empty($allOrgIds)) {
-            $attStmt = $conn->prepare("
-                SELECT aid, attend, rate, `s.rate` 
-                FROM attendance 
-                WHERE sid = ?
-            ");
-            $attStmt->bind_param("s", $uid);
-            $attStmt->execute();
-            $attRes = $attStmt->get_result();
-            while ($row = $attRes->fetch_assoc()) {
-                $attendanceMap[$row['aid']] = $row;
+        if (!empty($monitors)) {
+            $monStmt = $conn->prepare("INSERT INTO monitor (oid, mid) VALUES (?, ?)");
+            foreach ($monitors as $mid) {
+                $monStmt->bind_param("ss", $oid, $mid);
+                $monStmt->execute();
             }
+            $monStmt->close();
         }
 
-        header('Content-Type: application/pdf');
-        header('Content-Disposition: attachment; filename="Student_Report_' . $uid . '.pdf"');
-
-        $pdfCommands = [];
-        
-        $pdfCommands[] = ["font" => "F1", "size" => 16, "x" => 80, "y" => 730, "text" => "ECAMS STUDENT REPORT"];
-        
-        $details = [
-            ["label" => "UID: ", "val" => ($student['uid'] ?? '')],
-            ["label" => "Name: ", "val" => ($student['name'] ?? '')],
-            ["label" => "Class: ", "val" => ($student['class'] ?? '')],
-            ["label" => "CID: ", "val" => ($student['cid'] ?? '')],
-            ["label" => "Email: ", "val" => ($student['email'] ?? '')],
-            ["label" => "Role: ", "val" => ($student['role'] ?? '')],
-            ["label" => "Date Range: ", "val" => $start . " to " . $end]
-        ];
-
-        $y = 690;
-        foreach ($details as $d) {
-            $pdfCommands[] = ["font" => "F1", "size" => 11, "x" => 40, "y" => $y, "text" => $d['label']];
-            $pdfCommands[] = ["font" => "F2", "size" => 11, "x" => 120, "y" => $y, "text" => $d['val']];
-            $y -= 18;
-        }
-
-        $y -= 5;
-        $pdfCommands[] = ["font" => "F1", "size" => 10, "x" => 40, "y" => $y, "text" => "--------------------------------------------------------------------------------"];
-        $y -= 20;
-
-        $sectionCounter = 1;
-
-        if ($att) {
-            $pdfCommands[] = ["font" => "F1", "size" => 12, "x" => 40, "y" => $y, "text" => $toRoman($sectionCounter) . ". Attendance Record:"];
-            $y -= 18;
-
-            $hasAll = in_array('ALL', $attOrgs);
-            $specificOrgs = array_diff($attOrgs, ['ALL']);
-            if (empty($attOrgs)) {
-                $hasAll = true;
-            }
-
-            foreach ($specificOrgs as $oid) {
-                if ($y < 50) break;
-                if (!isset($orgMap[$oid])) continue;
-                $orgName = $orgMap[$oid];
-                $pdfCommands[] = ["font" => "F1", "size" => 11, "x" => 50, "y" => $y, "text" => "[" . $orgName . "]"];
-                $y -= 16;
-
-                $activities = $getOrgActivities($oid);
-                $attCount = 0;
-                $attTotal = count($activities);
-                $index = 1;
-
-                foreach ($activities as $act) {
-                    if ($y < 50) break;
-                    $aid = $act['aid'];
-                    $status = "NOT PARTICIPATED";
-                    if (isset($attendanceMap[$aid]) && intval($attendanceMap[$aid]['attend']) === 1) {
-                        $status = "PARTICIPATED";
-                        $attCount++;
-                    }
-                    
-                    $actLabel = $index . ". " . $act['aname'] . " (" . $act['date'] . ")";
-                    $pdfCommands[] = ["font" => "F1", "size" => 10, "x" => 60, "y" => $y, "text" => $actLabel];
-                    $pdfCommands[] = ["font" => "F2", "size" => 10, "x" => 330, "y" => $y, "text" => $status];
-                    $y -= 15;
-                    $index++;
-                }
-                $avgAtt = $attTotal > 0 ? round(($attCount / $attTotal) * 100, 1) : 0;
-                $pdfCommands[] = ["font" => "F1", "size" => 10, "x" => 60, "y" => $y, "text" => "Average Attendance: " . $avgAtt . "% (" . $attCount . "/" . $attTotal . ")"];
-                $y -= 20;
-            }
-
-            if ($hasAll) {
-                if ($y >= 50) {
-                    $pdfCommands[] = ["font" => "F1", "size" => 11, "x" => 50, "y" => $y, "text" => "[All Organisations]"];
-                    $y -= 16;
-
-                    $activities = $getAllActivities($allOrgIds);
-                    $attCount = 0;
-                    $attTotal = count($activities);
-                    $index = 1;
-
-                    foreach ($activities as $act) {
-                        if ($y < 50) break;
-                        $aid = $act['aid'];
-                        $status = "NOT PARTICIPATED";
-                        if (isset($attendanceMap[$aid]) && intval($attendanceMap[$aid]['attend']) === 1) {
-                            $status = "PARTICIPATED";
-                            $attCount++;
-                        }
-                        
-                        $orgBracket = isset($orgMap[$act['oid']]) ? " (" . $orgMap[$act['oid']] . ")" : "";
-                        $actLabel = $index . ". " . $act['aname'] . $orgBracket . " (" . $act['date'] . ")";
-
-                        $pdfCommands[] = ["font" => "F1", "size" => 10, "x" => 60, "y" => $y, "text" => $actLabel];
-                        $pdfCommands[] = ["font" => "F2", "size" => 10, "x" => 330, "y" => $y, "text" => $status];
-                        $y -= 15;
-                        $index++;
-                    }
-                    $avgAtt = $attTotal > 0 ? round(($attCount / $attTotal) * 100, 1) : 0;
-                    $pdfCommands[] = ["font" => "F1", "size" => 10, "x" => 60, "y" => $y, "text" => "Average Attendance: " . $avgAtt . "% (" . $attCount . "/" . $attTotal . ")"];
-                    $y -= 20;
-                }
-            }
-
-            $y -= 10;
-            $sectionCounter++;
-        }
-
-        if ($part && $y > 60) {
-            $pdfCommands[] = ["font" => "F1", "size" => 12, "x" => 40, "y" => $y, "text" => $toRoman($sectionCounter) . ". Average Participation Rating:"];
-            $y -= 18;
-
-            $hasAll = in_array('ALL', $partOrgs);
-            $specificOrgs = array_diff($partOrgs, ['ALL']);
-            if (empty($partOrgs)) {
-                $hasAll = true;
-            }
-
-            foreach ($specificOrgs as $oid) {
-                if ($y < 50) break;
-                if (!isset($orgMap[$oid])) continue;
-                $orgName = $orgMap[$oid];
-                $pdfCommands[] = ["font" => "F1", "size" => 11, "x" => 50, "y" => $y, "text" => "[" . $orgName . "]"];
-                $y -= 16;
-
-                $activities = $getOrgActivities($oid);
-                $partSum = 0;
-                $partCount = 0;
-                $index = 1;
-
-                foreach ($activities as $act) {
-                    if ($y < 50) break;
-                    $aid = $act['aid'];
-                    $rate = isset($attendanceMap[$aid]['rate']) ? $attendanceMap[$aid]['rate'] : 'N/A';
-                    if (is_numeric($rate)) {
-                        $partSum += floatval($rate);
-                        $partCount++;
-                    }
-
-                    $actLabel = $index . ". " . $act['aname'];
-                    $pdfCommands[] = ["font" => "F1", "size" => 10, "x" => 60, "y" => $y, "text" => $actLabel];
-                    $pdfCommands[] = ["font" => "F2", "size" => 10, "x" => 330, "y" => $y, "text" => "Rate: " . $rate];
-                    $y -= 15;
-                    $index++;
-                }
-                $avgPart = $partCount > 0 ? round($partSum / $partCount, 2) : 0;
-                $pdfCommands[] = ["font" => "F1", "size" => 10, "x" => 60, "y" => $y, "text" => "Average Rating: " . $avgPart];
-                $y -= 20;
-            }
-
-            if ($hasAll) {
-                if ($y >= 50) {
-                    $pdfCommands[] = ["font" => "F1", "size" => 11, "x" => 50, "y" => $y, "text" => "[All Organisations]"];
-                    $y -= 16;
-
-                    $activities = $getAllActivities($allOrgIds);
-                    $partSum = 0;
-                    $partCount = 0;
-                    $index = 1;
-
-                    foreach ($activities as $act) {
-                        if ($y < 50) break;
-                        $aid = $act['aid'];
-                        $rate = isset($attendanceMap[$aid]['rate']) ? $attendanceMap[$aid]['rate'] : 'N/A';
-                        if (is_numeric($rate)) {
-                            $partSum += floatval($rate);
-                            $partCount++;
-                        }
-
-                        $orgBracket = isset($orgMap[$act['oid']]) ? " (" . $orgMap[$act['oid']] . ")" : "";
-                        $actLabel = $index . ". " . $act['aname'] . $orgBracket;
-
-                        $pdfCommands[] = ["font" => "F1", "size" => 10, "x" => 60, "y" => $y, "text" => $actLabel];
-                        $pdfCommands[] = ["font" => "F2", "size" => 10, "x" => 330, "y" => $y, "text" => "Rate: " . $rate];
-                        $y -= 15;
-                        $index++;
-                    }
-                    $avgPart = $partCount > 0 ? round($partSum / $partCount, 2) : 0;
-                    $pdfCommands[] = ["font" => "F1", "size" => 10, "x" => 60, "y" => $y, "text" => "Average Rating: " . $avgPart];
-                    $y -= 20;
-                }
-            }
-
-            $y -= 10;
-            $sectionCounter++;
-        }
-
-        if ($sat && $y > 60) {
-            $pdfCommands[] = ["font" => "F1", "size" => 12, "x" => 40, "y" => $y, "text" => $toRoman($sectionCounter) . ". Average Satisfactory Rating:"];
-            $y -= 18;
-
-            $hasAll = in_array('ALL', $satOrgs);
-            $specificOrgs = array_diff($satOrgs, ['ALL']);
-            if (empty($satOrgs)) {
-                $hasAll = true;
-            }
-
-            foreach ($specificOrgs as $oid) {
-                if ($y < 50) break;
-                if (!isset($orgMap[$oid])) continue;
-                $orgName = $orgMap[$oid];
-                $pdfCommands[] = ["font" => "F1", "size" => 11, "x" => 50, "y" => $y, "text" => "[" . $orgName . "]"];
-                $y -= 16;
-
-                $activities = $getOrgActivities($oid);
-                $satSum = 0;
-                $satCount = 0;
-                $index = 1;
-
-                foreach ($activities as $act) {
-                    if ($y < 50) break;
-                    $aid = $act['aid'];
-                    $sRate = isset($attendanceMap[$aid]['s.rate']) ? $attendanceMap[$aid]['s.rate'] : 'N/A';
-                    if (is_numeric($sRate)) {
-                        $satSum += floatval($sRate);
-                        $satCount++;
-                    }
-
-                    $actLabel = $index . ". " . $act['aname'];
-                    $pdfCommands[] = ["font" => "F1", "size" => 10, "x" => 60, "y" => $y, "text" => $actLabel];
-                    $pdfCommands[] = ["font" => "F2", "size" => 10, "x" => 330, "y" => $y, "text" => "Satisfactory Rate: " . $sRate];
-                    $y -= 15;
-                    $index++;
-                }
-                $avgSat = $satCount > 0 ? round($satSum / $satCount, 2) : 0;
-                $pdfCommands[] = ["font" => "F1", "size" => 10, "x" => 60, "y" => $y, "text" => "Average Rating: " . $avgSat];
-                $y -= 20;
-            }
-
-            if ($hasAll) {
-                if ($y >= 50) {
-                    $pdfCommands[] = ["font" => "F1", "size" => 11, "x" => 50, "y" => $y, "text" => "[All Organisations]"];
-                    $y -= 16;
-
-                    $activities = $getAllActivities($allOrgIds);
-                    $satSum = 0;
-                    $satCount = 0;
-                    $index = 1;
-
-                    foreach ($activities as $act) {
-                        if ($y < 50) break;
-                        $aid = $act['aid'];
-                        $sRate = isset($attendanceMap[$aid]['s.rate']) ? $attendanceMap[$aid]['s.rate'] : 'N/A';
-                        if (is_numeric($sRate)) {
-                            $satSum += floatval($sRate);
-                            $satCount++;
-                        }
-
-                        $orgBracket = isset($orgMap[$act['oid']]) ? " (" . $orgMap[$act['oid']] . ")" : "";
-                        $actLabel = $index . ". " . $act['aname'] . $orgBracket;
-
-                        $pdfCommands[] = ["font" => "F1", "size" => 10, "x" => 60, "y" => $y, "text" => $actLabel];
-                        $pdfCommands[] = ["font" => "F2", "size" => 10, "x" => 330, "y" => $y, "text" => "Satisfactory Rate: " . $sRate];
-                        $y -= 15;
-                        $index++;
-                    }
-                    $avgSat = $satCount > 0 ? round($satSum / $satCount, 2) : 0;
-                    $pdfCommands[] = ["font" => "F1", "size" => 10, "x" => 60, "y" => $y, "text" => "Average Rating: " . $avgSat];
-                    $y -= 20;
-                }
-            }
-        }
-
-        $contentStream = "";
-        $contentStream .= "0 g 0 G 40 720 32 32 re f\n";
-
-        foreach ($pdfCommands as $cmd) {
-            $escapedText = addslashes($cmd['text']);
-            $contentStream .= "BT /{$cmd['font']} {$cmd['size']} Tf {$cmd['x']} {$cmd['y']} Td ({$escapedText}) Tj ET\n";
-        }
-
-        $streamLength = strlen($contentStream);
-        echo "%PDF-1.4\n";
-        echo "1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n";
-        echo "2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n";
-        echo "3 0 obj << /Type /Page /Parent 2 0 R /Resources << /Font << /F1 4 0 R /F2 5 0 R >> >> /MediaBox [0 0 612 792] /Contents 6 0 R >> endobj\n";
-        echo "4 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Courier-Bold >> endobj\n"; 
-        echo "5 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Courier >> endobj\n";      
-        echo "6 0 obj << /Length " . $streamLength . " >> stream\n";
-        echo $contentStream;
-        echo "endstream\nendobj\n";
-        
-        echo "xref\n0 7\n";
-        echo "0000000000 65535 f \n";
-        echo "0000000009 00000 n \n";
-        echo "0000000058 00000 n \n";
-        echo "0000000115 00000 n \n";
-        echo "0000000260 00000 n \n";
-        echo "0000000327 00000 n \n";
-        echo "0000000408 00000 n \n";
-        echo "trailer << /Size 7 /Root 1 0 R >>\nstartxref\n550\n%%EOF";
-        exit;
+        $conn->commit();
+        echo json_encode(['success' => true]);
+    } catch (Exception $e) {
+        $conn->rollback();
+        echo json_encode(['success' => false, 'message' => $e->getMessage()]);
     }
-
-    if (isset($_SERVER['CONTENT_TYPE']) && strpos($_SERVER['CONTENT_TYPE'], 'application/json') !== false) {
-        header('Content-Type: application/json');
-        $data = json_decode(file_get_contents('php://input'), true);
-
-        if (!$data) {
-            echo json_encode(['success' => false, 'message' => 'Invalid payload.']);
-            exit;
-        }
-
-        if (isset($data['action']) && $data['action'] === 'hash_preview') {
-            $plain = $data['password'] ?? '';
-            if (empty($plain)) {
-                echo json_encode(['success' => true, 'hash' => '']);
-                exit;
-            }
-            $hashed = password_hash($plain, PASSWORD_DEFAULT);
-            echo json_encode(['success' => true, 'hash' => $hashed]);
-            exit;
-        }
-
-        if (isset($data['action']) && $data['action'] === 'delete') {
-            $uid = $data['uid'] ?? '';
-            if (empty($uid)) {
-                echo json_encode(['success' => false, 'message' => 'UID required for deletion.']);
-                exit;
-            }
-            $conn->begin_transaction();
-            try {
-                $stmt1 = $conn->prepare("DELETE FROM membership WHERE sid = ?");
-                $stmt1->bind_param("s", $uid);
-                $stmt1->execute();
-
-                $stmt2 = $conn->prepare("DELETE FROM users WHERE uid = ?");
-                $stmt2->bind_param("s", $uid);
-                $stmt2->execute();
-
-                $conn->commit();
-                echo json_encode(['success' => true, 'message' => 'User deleted successfully.']);
-            } catch (Exception $e) {
-                $conn->rollback();
-                echo json_encode(['success' => false, 'message' => 'Delete failed: ' . $e->getMessage()]);
-            }
-            exit;
-        }
-
-        if (isset($data['action']) && $data['action'] === 'batch_add') {
-            $newUsers = $data['users'] ?? [];
-            if (empty($newUsers)) {
-                echo json_encode(['success' => false, 'message' => 'No user entries provided.']);
-                exit;
-            }
-            $conn->begin_transaction();
-            try {
-                $stmt = $conn->prepare("INSERT INTO users (uid, name, class, cid, email, password, role) VALUES (?, ?, ?, ?, ?, ?, ?)");
-                
-                foreach ($newUsers as $u) {
-                    $hashedPwd = !empty($u['password']) ? password_hash($u['password'], PASSWORD_DEFAULT) : '';
-                    $stmt->bind_param("sssssss", $u['uid'], $u['name'], $u['class'], $u['cid'], $u['email'], $hashedPwd, $u['role']);
-                    $stmt->execute();
-                }
-                $conn->commit();
-                echo json_encode(['success' => true, 'message' => 'Users added successfully.']);
-            } catch (Exception $e) {
-                $conn->rollback();
-                echo json_encode(['success' => false, 'message' => 'Batch insert failed: ' . $e->getMessage()]);
-            }
-            exit;
-        }
-
-        $uid      = $data['uid'] ?? '';
-        $name     = $data['name'] ?? '';
-        $class    = $data['class'] ?? '';
-        $cid      = $data['cid'] ?? '';
-        $email    = $data['email'] ?? '';
-        $plainPwd = $data['password'] ?? '';
-        $role     = $data['role'] ?? '';
-        $orgs     = $data['orgs'] ?? [];
-
-        if (empty($uid)) {
-            echo json_encode(['success' => false, 'message' => 'UID is required.']);
-            exit;
-        }
-
-        $conn->begin_transaction();
-        try {
-            if (!empty($plainPwd)) {
-                $hashedPassword = password_hash($plainPwd, PASSWORD_DEFAULT);
-                $updateUserStmt = $conn->prepare("
-                    UPDATE users 
-                    SET name = ?, class = ?, cid = ?, email = ?, password = ?, role = ? 
-                    WHERE uid = ?
-                ");
-                $updateUserStmt->bind_param("sssssss", $name, $class, $cid, $email, $hashedPassword, $role, $uid);
-                $updateUserStmt->execute();
-            } else {
-                $updateUserStmt = $conn->prepare("
-                    UPDATE users 
-                    SET name = ?, class = ?, cid = ?, email = ?, role = ? 
-                    WHERE uid = ?
-                ");
-                $updateUserStmt->bind_param("ssssss", $name, $class, $cid, $email, $role, $uid);
-                $updateUserStmt->execute();
-            }
-
-            $delStmt = $conn->prepare("DELETE FROM membership WHERE sid = ?");
-            $delStmt->bind_param("s", $uid);
-            $delStmt->execute();
-
-            if (!empty($orgs)) {
-                $insertMemStmt = $conn->prepare("INSERT INTO membership (sid, oid) VALUES (?, ?)");
-                foreach ($orgs as $oid) {
-                    $insertMemStmt->bind_param("ss", $uid, $oid);
-                    $insertMemStmt->execute();
-                }
-            }
-
-            $conn->commit();
-            echo json_encode(['success' => true, 'message' => 'User updated successfully.']);
-        } catch (Exception $e) {
-            $conn->rollback();
-            echo json_encode(['success' => false, 'message' => 'Database error: ' . $e->getMessage()]);
-        }
-        exit;
-    }
+    exit;
 }
 
-// -------------------------------------------------------------------------
-// 2. PAGE DATA FETCHING
-// -------------------------------------------------------------------------
-$allOrganisations = [];
-$orgRes = $conn->query("SELECT oid, oname FROM organisations ORDER BY oname ASC");
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'delete_org') {
+    header('Content-Type: application/json');
+    $oid = trim($_POST['oid'] ?? '');
+    
+    $conn->begin_transaction();
+    try {
+        $delMon = $conn->prepare("DELETE FROM monitor WHERE oid = ?");
+        $delMon->bind_param("s", $oid);
+        $delMon->execute();
+        $delMon->close();
+
+        $delMem = $conn->prepare("DELETE FROM membership WHERE oid = ?");
+        $delMem->bind_param("s", $oid);
+        $delMem->execute();
+        $delMem->close();
+
+        $delOrg = $conn->prepare("DELETE FROM organisations WHERE oid = ?");
+        $delOrg->bind_param("s", $oid);
+        $delOrg->execute();
+        $delOrg->close();
+
+        $safeOid = preg_replace('/[^a-zA-Z0-9_-]/', '_', $oid);
+        $filePath = "uploads/org_{$safeOid}.png";
+        if (file_exists($filePath)) {
+            unlink($filePath);
+        }
+
+        $conn->commit();
+        echo json_encode(['success' => true]);
+    } catch (Exception $e) {
+        $conn->rollback();
+        echo json_encode(['success' => false, 'message' => $e->getMessage()]);
+    }
+    exit;
+}
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'update_org') {
+    header('Content-Type: application/json');
+    $oldOid = trim($_POST['old_oid'] ?? '');
+    $newOid = trim($_POST['new_oid'] ?? '');
+    $oname = trim($_POST['oname'] ?? '');
+    $tid = trim($_POST['tid'] ?? null);
+    $members = $_POST['members'] ?? [];
+    $monitors = $_POST['monitors'] ?? [];
+
+    if (empty($newOid) || empty($oname)) {
+        echo json_encode(['success' => false, 'message' => 'Organisation ID and Name are required.']);
+        exit;
+    }
+
+    if ($oldOid !== $newOid) {
+        $chk = $conn->prepare("SELECT COUNT(*) FROM organisations WHERE oid = ?");
+        $chk->bind_param("s", $newOid);
+        $chk->execute();
+        $chk->bind_result($count);
+        $chk->fetch();
+        $chk->close();
+
+        if ($count > 0) {
+            echo json_encode(['success' => false, 'message' => 'Organisation ID already exists.']);
+            exit;
+        }
+    }
+
+    $conn->begin_transaction();
+    try {
+        $finalTid = empty($tid) ? null : $tid;
+        if ($oldOid !== $newOid) {
+            $updMonOid = $conn->prepare("UPDATE monitor SET oid = ? WHERE oid = ?");
+            $updMonOid->bind_param("ss", $newOid, $oldOid);
+            $updMonOid->execute();
+            $updMonOid->close();
+
+            $updMemOid = $conn->prepare("UPDATE membership SET oid = ? WHERE oid = ?");
+            $updMemOid->bind_param("ss", $newOid, $oldOid);
+            $updMemOid->execute();
+            $updMemOid->close();
+
+            $updOrg = $conn->prepare("UPDATE organisations SET oid = ?, oname = ?, tid = ? WHERE oid = ?");
+            $updOrg->bind_param("ssss", $newOid, $oname, $finalTid, $oldOid);
+            $updOrg->execute();
+            $updOrg->close();
+
+            $oldImg = "uploads/org_" . preg_replace('/[^a-zA-Z0-9_-]/', '_', $oldOid) . ".png";
+            $newImg = "uploads/org_" . preg_replace('/[^a-zA-Z0-9_-]/', '_', $newOid) . ".png";
+            if (file_exists($oldImg)) {
+                rename($oldImg, $newImg);
+            }
+        } else {
+            $stmt = $conn->prepare("UPDATE organisations SET oname = ?, tid = ? WHERE oid = ?");
+            $stmt->bind_param("sss", $oname, $finalTid, $oldOid);
+            $stmt->execute();
+            $stmt->close();
+        }
+
+        $delMon = $conn->prepare("DELETE FROM monitor WHERE oid = ?");
+        $delMon->bind_param("s", $newOid);
+        $delMon->execute();
+        $delMon->close();
+
+        $delMem = $conn->prepare("DELETE FROM membership WHERE oid = ?");
+        $delMem->bind_param("s", $newOid);
+        $delMem->execute();
+        $delMem->close();
+
+        if (!empty($members)) {
+            $memStmt = $conn->prepare("INSERT INTO membership (oid, sid) VALUES (?, ?)");
+            foreach ($members as $sid) {
+                $memStmt->bind_param("ss", $newOid, $sid);
+                $memStmt->execute();
+            }
+            $memStmt->close();
+        }
+
+        if (!empty($monitors)) {
+            $monStmt = $conn->prepare("INSERT INTO monitor (oid, mid) VALUES (?, ?)");
+            foreach ($monitors as $mid) {
+                $monStmt->bind_param("ss", $newOid, $mid);
+                $monStmt->execute();
+            }
+            $monStmt->close();
+        }
+
+        $conn->commit();
+        echo json_encode(['success' => true]);
+    } catch (Exception $e) {
+        $conn->rollback();
+        echo json_encode(['success' => false, 'message' => $e->getMessage()]);
+    }
+    exit;
+}
+
+$teachersList = [];
+$tRes = $conn->query("SELECT uid, name FROM users WHERE role IN ('teacher', 'admin') ORDER BY CAST(uid AS UNSIGNED) ASC, uid ASC");
+if ($tRes) {
+    $teachersList = $tRes->fetch_all(MYSQLI_ASSOC);
+}
+
+$studentsList = [];
+$sRes = $conn->query("SELECT uid, name FROM users WHERE role = 'student' ORDER BY CAST(uid AS UNSIGNED) ASC, uid ASC");
+if ($sRes) {
+    $studentsList = $sRes->fetch_all(MYSQLI_ASSOC);
+}
+
+$orgsData = [];
+$orgRes = $conn->query("
+    SELECT o.oid, o.oname, o.tid, u.name AS teacher_name
+    FROM organisations o
+    LEFT JOIN users u ON o.tid = u.uid
+    ORDER BY o.oid ASC
+");
+
 if ($orgRes) {
-    $allOrganisations = $orgRes->fetch_all(MYSQLI_ASSOC);
-}
+    $orgsRaw = $orgRes->fetch_all(MYSQLI_ASSOC);
 
-$existingUsersData = [];
-$exRes = $conn->query("SELECT class, cid FROM users WHERE class IS NOT NULL AND cid IS NOT NULL");
-if ($exRes) {
-    $existingUsersData = $exRes->fetch_all(MYSQLI_ASSOC);
-}
+    foreach ($orgsRaw as $org) {
+        $monStmt = $conn->prepare("SELECT mid FROM monitor WHERE oid = ?");
+        $monStmt->bind_param("s", $org['oid']);
+        $monStmt->execute();
+        $monRes = $monStmt->get_result();
+        $org['monitors'] = array_column($monRes->fetch_all(MYSQLI_ASSOC), 'mid');
+        $monStmt->close();
 
-$classes = [];
-$classRes = $conn->query("SELECT DISTINCT class FROM users WHERE class IS NOT NULL AND class != '' ORDER BY class ASC");
-if ($classRes) {
-    while ($row = $classRes->fetch_row()) {
-        $classes[] = $row[0];
-    }
-}
+        $memStmt = $conn->prepare("
+            SELECT u.uid, u.name 
+            FROM membership m
+            JOIN users u ON m.sid = u.uid
+            WHERE m.oid = ?
+            ORDER BY CAST(u.uid AS UNSIGNED) ASC, u.uid ASC
+        ");
+        $memStmt->bind_param("s", $org['oid']);
+        $memStmt->execute();
+        $memRes = $memStmt->get_result();
+        $org['members'] = $memRes->fetch_all(MYSQLI_ASSOC);
+        $memStmt->close();
+        
+        usort($org['members'], function($a, $b) use ($org) {
+            $aIsMon = in_array($a['uid'], $org['monitors']);
+            $bIsMon = in_array($b['uid'], $org['monitors']);
+            if ($aIsMon && !$bIsMon) return -1;
+            if (!$aIsMon && $bIsMon) return 1;
+            return strnatcmp($a['uid'], $b['uid']);
+        });
 
-$users = [];
-$query = "
-    SELECT 
-        u.uid, 
-        u.name, 
-        u.class, 
-        u.cid,
-        u.email,
-        u.role,
-        CASE 
-            WHEN LOWER(u.role) = 'student' THEN (
-                SELECT GROUP_CONCAT(CONCAT(o.oid, ':', o.oname) SEPARATOR '||')
-                FROM membership m
-                JOIN organisations o ON m.oid = o.oid
-                WHERE m.sid = u.uid
-            )
-            ELSE (
-                SELECT GROUP_CONCAT(CONCAT(o.oid, ':', o.oname) SEPARATOR '||')
-                FROM organisations o
-                WHERE o.tid = u.uid
-            )
-        END AS org_data
-    FROM users u
-    ORDER BY u.uid ASC
-";
-$stmt = $conn->query($query);
-if ($stmt) {
-    $rawUsers = $stmt->fetch_all(MYSQLI_ASSOC);
-    foreach ($rawUsers as $row) {
-        $orgList = [];
-        if (!empty($row['org_data'])) {
-            $pairs = explode('||', $row['org_data']);
-            foreach ($pairs as $pair) {
-                $parts = explode(':', $pair, 2);
-                if (count($parts) === 2) {
-                    $orgList[] = ['oid' => $parts[0], 'oname' => $parts[1]];
-                }
-            }
-        }
-        $row['organisations'] = $orgList;
-        unset($row['org_data']);
-        $users[] = $row;
+        $safeOid = preg_replace('/[^a-zA-Z0-9_-]/', '_', $org['oid']);
+        $existingImg = "uploads/org_{$safeOid}.png";
+        $org['image_path'] = file_exists($existingImg) ? $existingImg : '';
+        
+        $orgsData[] = $org;
     }
 }
 ?>
@@ -603,454 +308,182 @@ if ($stmt) {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ECAMS - User Profile</title>
+    <title>ECAMS - Organisations Overview</title>
     <link rel="icon" type="image/x-icon" href="sECAMS.png">
 
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
-        html, body { height: 100%; overflow: hidden; }
+        html, body { height: 100%; margin: 0; overflow: hidden; }
         body {
             font-family: system-ui, -apple-system, sans-serif;
             background-color: #e0f2fe;
             color: #1e293b;
-            min-height: 100vh;
+            height: 100vh;
             display: flex;
             flex-direction: column;
-            overflow-x: hidden;
         }
-
         header {
             background-color: #ffffff;
             border-bottom: 4px double #1037e572;
             padding: 1rem 2.5rem;
-            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
             position: relative;
             z-index: 20;
             height: 110px;
-            box-sizing: border-box;
+            flex-shrink: 0;
         }
-
-        .header-content {
-            max-width: 100%;
-            margin: 0 auto;
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-        }
-
+        .header-content { display: flex; align-items: center; justify-content: space-between; }
         .header-left { display: flex; align-items: center; gap: 1rem; }
         .logo { height: 85px; width: auto; display: block; }
-        .header-titles h1 { font-size: 1.35rem; font-weight: 700; color: #2e8ccb; letter-spacing: -0.02em; }
+        .header-titles h1 { font-size: 1.35rem; font-weight: 700; color: #2e8ccb; }
         .sub-header-row { display: flex; align-items: center; gap: 12px; margin-top: 2px; }
         .sub-header-row p { font-size: 0.85rem; color: #64748b; }
-        
         .btn-logout {
-            background-color: #eb4174;
-            color: #ffffff;
-            font-size: 0.75rem;
-            font-weight: 700;
-            padding: 0.25rem 0.65rem;
-            border-radius: 4px;
-            text-decoration: none;
+            background-color: #eb4174; color: #ffffff; font-size: 0.75rem;
+            font-weight: 700; padding: 0.25rem 0.65rem; border-radius: 4px; text-decoration: none;
             transition: background-color 0.2s;
             display: inline-block;
         }
         .btn-logout:hover { background-color: #9f1239; }
-
         .clock-widget { text-align: right; padding: 0.5rem 0.85rem; }
         .clock-time { font-size: 1.15rem; font-weight: 700; color: #0f172a; font-variant-numeric: tabular-nums; }
-        .clock-date { font-size: 0.75rem; font-weight: 500; color: #64748b; text-transform: uppercase; letter-spacing: 0.03em; }
+        .clock-date { font-size: 0.75rem; font-weight: 500; color: #64748b; text-transform: uppercase; }
 
         .app-body { flex: 1; display: flex; height: calc(100vh - 110px); position: relative; overflow: hidden; }
-
-        .side-panel {
-            width: 280px;
-            background-color: #ffffff;
-            border-right: 4px double #1037e572;
-            display: flex;
-            flex-direction: column;
-            flex-shrink: 0;
-            z-index: 10;
-        }
-
-        .nav-btn {
-            flex: 1;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            text-decoration: none;
-            font-size: 1.35rem;
-            font-weight: 700;
-            color: #ffffff;
-            transition: all 0.2s ease-in-out;
-            box-sizing: border-box;
-            position: relative;
-            border: none;
-            cursor: pointer;
-        }
-
+        .side-panel { width: 280px; background-color: #ffffff; border-right: 4px double #1037e572; display: flex; flex-direction: column; flex-shrink: 0; }
+        .nav-btn { flex: 1; display: flex; align-items: center; justify-content: center; text-decoration: none; position: relative; border: none; cursor: pointer; transition: all 0.25s ease-in-out; }
         .nav-btn.is-active::before {
-            content: '';
-            position: absolute;
-            top: 16px;
-            left: 16px;
-            width: 16px;
-            height: 16px;
-            background-color: #2563eb;
-            border-radius: 50%;
-            border: 2px solid #ffffff;
-            box-shadow: 0 0 10px rgba(37, 99, 235, 0.8);
-            z-index: 20;
+            content: ''; position: absolute; top: 12px; left: 12px; width: 14px; height: 14px;
+            background-color: #2563eb; border-radius: 50%; border: 2px solid #ffffff; 
+            box-shadow: 0 0 8px rgba(37, 99, 235, 0.6); z-index: 10;
         }
-
         .side-panel .nav-btn:hover { border: 8px double #ffffff !important; z-index: 2; }
         .btn-icon { width: 280px; height: 200px; object-fit: contain; }
         .nav-btn-org { background-color: #fea768; border-bottom: 2px solid #ea580c; }
         .nav-btn-activity { background-color: #dc2626; border-bottom: 2px solid #991b1b; }
         .nav-btn-user { background-color: #881337; }
-
-        main {
-            flex: 1;
-            padding: 2rem;
-            background-color: #d6e6f9;
-            height: 100%;
-            overflow: hidden;
-            position: relative;
+        
+        main { flex: 1; padding: 1rem 2rem; background-color: #d6e6f9; overflow-x: auto; overflow-y: hidden; padding-top: 1rem; height: 100%; position: relative; }
+        
+        .floating-controls {
+            position: fixed; top: 115px; left: 280px; right: 0; z-index: 1000;
+            display: flex; gap: 4px; align-items: center; justify-content: center; pointer-events: none;
         }
-
-        .content-wrapper { max-width: 1000px; margin: 0 auto; height: 100%; display: flex; flex-direction: column; }
-        .filter-controls { display: flex; gap: 1rem; margin-bottom: 1.25rem; align-items: center; flex-shrink: 0; }
-
-        .search-box {
-            flex: 1;
-            padding: 0.75rem 1rem;
-            border: 1px solid #cbd5e1;
-            border-radius: 8px;
-            font-size: 0.95rem;
-            background-color: #ffffff;
-            outline: none;
-            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.03);
-            transition: border-color 0.2s;
+        .control-box {
+            background: #ffffff; border: 1px solid #cbd5e1; padding: 4px 10px; border-radius: 4px;
+            font-size: 0.75rem; font-weight: 700; cursor: pointer; box-shadow: 0 2px 4px rgba(0,0,0,0.08);
+            user-select: none; pointer-events: auto;
         }
-        .search-box:focus { border-color: #2563eb; box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.15); }
+        .control-box.grey { background-color: #f1f5f9; color: #94a3b8; border-color: #cbd5e1; cursor: not-allowed; }
+        .control-box.blue { background-color: #2563eb; color: #ffffff; border-color: #1d4ed8; cursor: pointer; }
 
-        .class-select {
-            padding: 0.75rem 1rem;
-            border: 1px solid #cbd5e1;
-            border-radius: 8px;
-            font-size: 0.95rem;
-            background-color: #ffffff;
-            outline: none;
-            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.03);
-            cursor: pointer;
-            min-width: 180px;
+        .orgs-horizontal-container { display: flex; gap: 1.5rem; height: 100%; align-items: flex-start; width: max-content; padding-bottom: 1rem; margin-top: 1.267rem; }
+        
+        .org-vertical-box {
+            border-radius: 12px; border: 1px solid rgba(219, 234, 254, 0.6);
+            box-shadow: 0 4px 12px rgba(37, 99, 235, 0.08); width: 320px; min-width: 320px;
+            height: calc(100vh - 165px); display: flex; flex-direction: column; padding: 1.25rem; flex-shrink: 0;
+            position: relative; backdrop-filter: blur(4px); overflow: hidden;
+            background-color: rgba(52, 102, 235, 0.35);
         }
-
-        .user-container {
-            background: #ffffff;
-            border-radius: 12px;
-            padding: 0;
-            box-shadow: 0 4px 12px rgba(37, 99, 235, 0.08);
-            border: 1px solid #dbeafe;
-            height: calc(100vh - 270px);
-            overflow-y: auto;
-            box-sizing: border-box;
-            position: relative;
+        
+        .delete-arrow-btn { position: absolute; top: 6px; left: 6px; width: 20px; height: 20px; cursor: pointer; z-index: 50; display: none; }
+        .org-header-section { border-bottom: 2px solid #e2e8f0; padding-bottom: 0.75rem; margin-bottom: 0.85rem; flex-shrink: 0; }
+        .org-title-row { display: flex; align-items: center; justify-content: space-between; gap: 4px; margin-bottom: 0.6rem; }
+        .org-title { font-size: 0.95rem; font-weight: 800; color: #0f172a; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .org-title-input { padding: 4px 6px; font-size: 0.85rem; font-weight: 700; border: 1px solid #cbd5e1; border-radius: 4px; background-color: #ffffff; color: #1e293b; margin-bottom: 0; }
+        .org-title-input:hover, .org-title-input:focus { border-color: #2563eb; outline: none; }
+        .btn-upload-file {
+            background-color: #f1f5f9; color: #334155; border: 1px solid #cbd5e1; border-radius: 4px;
+            padding: 0.3rem 0.4rem; font-size: 0.65rem; font-weight: 700; cursor: pointer; text-align: center; white-space: nowrap; display: none;
         }
-
-        .table-header {
-            position: sticky;
-            top: 0;
-            z-index: 10;
-            display: grid;
-            grid-template-columns: 1fr 2fr 1fr 1fr;
-            gap: 1rem;
-            padding: 0.75rem 1.25rem;
-            background-color: #f1f5f9;
-            border-bottom: 2px solid #cbd5e1;
-            font-size: 0.75rem;
-            font-weight: 700;
-            color: #475569;
-            text-transform: uppercase;
+        .btn-upload-file:hover { background-color: #e2e8f0; color: #0f172a; border-color: #2563eb; }
+        
+        .image-preview-wrapper { position: relative; width: 100%; margin-bottom: 0.6rem; margin-top: 0.4rem; }
+        .org-image-preview { width: 100%; aspect-ratio: 1 / 1; background-color: #f8fafc; border-radius: 6px; object-fit: cover; border: 1px solid #cbd5e1; display: block; }
+        .delete-photo-btn {
+            position: absolute; top: 6px; left: 6px; width: 22px; height: 22px; cursor: pointer; z-index: 10;
+            display: none; background: rgba(255, 255, 255, 0.8); border-radius: 4px; padding: 2px;
         }
+        .delete-photo-btn:hover { background: rgba(255, 255, 255, 1); }
 
-        .table-header div {
-            cursor: pointer;
-            user-select: none;
-            display: flex;
-            align-items: center;
+        .teacher-info { font-size: 0.85rem; color: #475569; text-align: left; margin-top: 0.4rem; position: relative; }
+        .teacher-name-bold { font-weight: 700; color: #1e293b; font-size: 1.1rem; }
+        .teacher-input { width: 100%; padding: 6px 8px; font-size: 0.85rem; border: 1px solid #cbd5e1; border-radius: 4px; margin-top: 4px; background-color: #ffffff; color: #1e293b; display: none; }
+        .teacher-input:hover, .teacher-input:focus { outline: none; border-color: #2563eb; box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.15); }
+        
+        .custom-dropdown-list {
+            position: absolute; top: 100%; left: 0; width: 100%; background: #ffffff;
+            border: 1px solid #cbd5e1; border-radius: 4px; max-height: 150px; overflow-y: auto;
+            z-index: 100; display: none; box-shadow: 0 4px 6px rgba(0,0,0,0.1); margin-top: 2px;
+        }
+        .custom-dropdown-item { padding: 6px 10px; font-size: 0.85rem; color: #1e293b; cursor: pointer; border-bottom: 1px solid #f1f5f9; }
+        .custom-dropdown-item:hover { background-color: #eff6ff; color: #2563eb; border-left: 3px solid #2563eb; }
+
+        .members-section-title { font-size: 0.8rem; font-weight: 710; color: #5d5c5c; text-transform: uppercase; margin-bottom: 0.5rem; flex-shrink: 0; }
+        .member-search-input { width: 100%; padding: 4px 8px; font-size: 0.8rem; border: 1px solid #cbd5e1; border-radius: 4px; margin-bottom: 6px; background-color: #ffffff; color: #1e293b; flex-shrink: 0; display: none; }
+        .member-search-input:hover, .member-search-input:focus { border-color: #2563eb; outline: none; }
+        
+        .members-table-wrapper { flex: 1; overflow-y: auto; border: 1px solid #f1f5f9; border-radius: 8px; background-color: #f8fafc; min-height: 0; }
+        .checklist-items-scroll { overflow-y: auto; max-height: 100%; }
+        
+        .members-table { width: 100%; border-collapse: collapse; text-align: left; }
+        .members-table th { position: sticky; top: 0; background-color: #f1f5f9; font-size: 0.72rem; font-weight: 700; color: #475569; padding: 4px 8px; border-bottom: 1px solid #cbd5e1; z-index: 5; }
+        .members-table td { padding: 4px 8px; font-size: 0.85rem; color: #1e293b; border-bottom: 1px solid #f1f5f9; }
+        
+        .member-row-monitor td { font-weight: bold; }
+        
+        .checklist-container { padding: 4px; display: flex; flex-direction: column; }
+        .checklist-item { display: flex; align-items: center; gap: 8px; padding: 4px 6px; font-size: 0.85rem; color: #1e293b; border-bottom: 1px solid #f1f5f9; background-color: #ffffff; cursor: pointer; user-select: none; }
+        .checklist-item:hover { background-color: #eff6ff; }
+        .state-box {
+            width: 16px; height: 16px; border: 1px solid #cbd5e1; border-radius: 3px; display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; background-color: #ffffff;
+        }
+        .checklist-item.state-member .state-box { background-color: #2563eb; border-color: #1d4ed8; }
+        .checklist-item.state-monitor .state-box { background-color: #dc2626; border-color: #991b1b; }
+        
+        .btn-save-org { width: 100%; background-color: #2563eb; color: #ffffff; border: none; padding: 8px; border-radius: 6px; font-weight: 700; cursor: pointer; margin-top: 8px; flex-shrink: 0; display: none; }
+        .btn-save-org:hover { background-color: #1d4ed8; }
+        
+        .crop-modal-overlay {
+            position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
+            background-color: rgba(15, 23, 42, 0.7); z-index: 2000; display: flex; align-items: center; justify-content: center; opacity: 0; pointer-events: none; transition: opacity 0.2s ease;
+        }
+        .crop-modal-overlay.active { opacity: 1; pointer-events: auto; }
+        .crop-modal-box { background-color: #ffffff; width: 90%; max-width: 360px; border-radius: 10px; padding: 1.25rem; box-shadow: 0 10px 25px rgba(0, 0, 0, 0.2); text-align: center; }
+        .crop-viewport { width: 260px; height: 260px; margin: 0 auto 1rem auto; background-color: #0f172a; position: relative; overflow: hidden; cursor: grab; border-radius: 4px; }
+        #cropImage { position: absolute; transform-origin: top left; user-select: none; pointer-events: none; }
+        .zoom-slider-con { margin-bottom: 1rem; display: flex; align-items: center; gap: 8px; font-size: 0.75rem; color: #64748b; }
+        .zoom-slider-con input { flex: 1; }
+        .crop-modal-actions { display: flex; gap: 0.75rem; justify-content: center; }
+        .btn-modal-cancel, .btn-modal-confirm { flex: 1; padding: 0.5rem; border: none; border-radius: 6px; font-weight: 600; cursor: pointer; color: #fff; }
+        .btn-modal-cancel { background-color: #64748b; }
+        .btn-modal-confirm { background-color: #2563eb; }
+
+        /* Editing Mode Scoping Switchers */
+        body.editing-mode .delete-arrow-btn,
+        body.editing-mode .btn-upload-file,
+        body.editing-mode .org-title-edit,
+        body.editing-mode .teacher-input,
+        body.editing-mode .member-search-input,
+        body.editing-mode .members-view-edit,
+        body.editing-mode .btn-save-org,
+        body.editing-mode .has-image .delete-photo-btn {
+            display: flex !important;
+        }
+        body.editing-mode .org-title-display,
+        body.editing-mode .teacher-display,
+        body.editing-mode .members-view-display {
+            display: none !important;
+        }
+        body.editing-mode .org-title-edit {
+            display: flex !important;
             gap: 4px;
-            transition: color 0.2s;
-        }
-        .table-header div:hover { color: #2563eb; }
-        .table-header div.sorted-asc::after { content: " ▲"; font-size: 0.65rem; color: #2563eb; }
-        .table-header div.sorted-desc::after { content: " ▼"; font-size: 0.65rem; color: #2563eb; }
-
-        .user-row {
-            display: grid;
-            grid-template-columns: 1fr 2fr 1fr 1fr;
             align-items: center;
-            gap: 1rem;
-            padding: 0.5rem 1.25rem;
-            border: 1px solid transparent;
-            border-bottom: 1px solid #f1f5f9;
-            transition: background-color 0.15s ease;
-            cursor: pointer;
-        }
-        .user-row:hover { background-color: #eff6ff; border: 1px solid #000000; }
-        .user-field-value { font-size: 0.9rem; font-weight: 600; color: #0f172a; }
-
-        .hover-tooltip {
-            position: fixed;
-            display: none;
-            pointer-events: none;
-            background-color: #ffffff;
-            border: 2px solid #2563eb;
-            border-radius: 10px;
-            padding: 16px 20px;
-            font-size: 1rem;
-            color: #0f172a;
-            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
-            z-index: 100000000000000;
-            min-width: 320px;
-            line-height: 1.5;
-        }
-
-        .add-floating-btn {
-            position: fixed;
-            bottom: 0;
-            right: 0;
-            width: 280px;
-            height: 280px;
-            cursor: pointer;
-            z-index: 1500;
-            transition: transform 0.2s ease;
-        }
-        .add-floating-btn:hover { transform: scale(1.05); }
-
-        .sliding-panel {
-            position: absolute;
-            top: 0;
-            right: 0;
-            width: 100%;
-            height: 100%;
-            background-color: #ffffff;
-            box-shadow: -4px 0 16px rgba(0, 0, 0, 0.15);
-            transform: translateX(100%);
-            transition: transform 0.4s ease-in-out;
-            z-index: 2500;
-            display: flex;
-            flex-direction: column;
-            padding: 1.5rem 2rem;
-            box-sizing: border-box;
-            overflow-y: auto;
-        }
-        .sliding-panel.is-open { transform: translateX(0); }
-
-        .close-arrow-btn {
-            position: absolute;
-            top: 16px;
-            left: 16px;
-            background: none;
-            border: none;
-            cursor: pointer;
-            padding: 4px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            transition: transform 0.2s ease;
-            z-index: 40;
-        }
-        .close-arrow-btn:hover { transform: scale(1.15); }
-        .arrow-img { width: 32px; height: 32px; object-fit: contain; }
-
-        .panel-content { width: 100%; display: flex; flex-direction: column; margin-top: 2rem; gap: 1.5rem; }
-        
-        .section-title {
-            font-size: 1.1rem;
-            font-weight: 800;
-            color: #0f172a;
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
-            margin-bottom: 0.75rem;
-            border-bottom: 2px solid #e2e8f0;
-            padding-bottom: 4px;
-        }
-
-        .panel-upper-half { display: flex; flex-direction: column; gap: 1rem; }
-        .panel-lower-half { display: flex; flex-direction: column; gap: 1rem; background-color: #f8fafc; padding: 1.25rem; border-radius: 10px; border: 1px solid #e2e8f0; }
-
-        .form-row-1 { display: grid; grid-template-columns: 0.8fr 2.2fr 1.2fr 0.8fr auto; gap: 1rem; align-items: center; }
-        .form-row-2 { display: grid; grid-template-columns: 1fr 1.3fr 1.3fr 1fr; gap: 1rem; align-items: flex-start; }
-
-        .field-group { display: flex; flex-direction: column; gap: 0.25rem; }
-        .field-label { font-size: 0.72rem; font-weight: 700; color: #64748b; text-transform: uppercase; }
-
-        .input-box {
-            padding: 0.45rem 0.65rem;
-            border: 1px solid #cbd5e1;
-            border-radius: 6px;
-            font-size: 0.88rem;
-            outline: none;
-            background-color: #ffffff;
-            color: #0f172a;
             width: 100%;
         }
-        .input-box:focus { border-color: #2563eb; }
-        .input-box-large { font-size: 1.15rem; font-weight: 800; color: #0f172a; }
-
-        .btn-delete-user {
-            background-color: #ef4444;
-            color: #ffffff;
-            border: none;
-            font-size: 0.85rem;
-            font-weight: 700;
-            padding: 0.5rem 1rem;
-            border-radius: 6px;
-            cursor: pointer;
-            transition: background-color 0.2s ease;
-            white-space: nowrap;
-        }
-        .btn-delete-user:hover { background-color: #dc2626; }
-
-        .dropdown-checklist-container { position: relative; display: inline-block; width: 60%; max-width: 350px; }
-        .checklist-anchor {
-            padding: 0.35rem 0.55rem;
-            border: 1px solid #cbd5e1;
-            border-radius: 6px;
-            font-size: 0.8rem;
-            background: #ffffff;
-            cursor: pointer;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
-        .checklist-dropdown {
-            display: none;
-            position: absolute;
-            top: 100%;
-            left: 0;
-            width: 100%;
-            background: #ffffff;
-            border: 1px solid #cbd5e1;
-            border-radius: 6px;
-            max-height: 120px;
-            overflow-y: auto;
-            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
-            z-index: 100;
-            padding: 4px;
-        }
-        .checklist-dropdown.visible { display: block; }
-        .checklist-item { display: flex; align-items: center; gap: 8px; padding: 3px 6px; font-size: 0.78rem; color: #1e293b; cursor: pointer; }
-        .checklist-item:hover { background-color: #f1f5f9; }
-
-        .panel-actions-row { display: flex; justify-content: center; align-items: center; gap: 1rem; margin-top: 0.5rem; }
-        .btn-modify {
-            background-color: #94a3b8;
-            color: #ffffff;
-            font-size: 0.95rem;
-            font-weight: 700;
-            padding: 0.5rem 2.5rem;
-            border: none;
-            border-radius: 6px;
-            cursor: not-allowed;
-            transition: all 0.2s ease;
-        }
-        .btn-modify.is-active { background-color: #2563eb; cursor: pointer; }
-        .btn-modify.is-active:hover { background-color: #1d4ed8; }
-
-        .report-checkbox-group { display: flex; flex-direction: column; gap: 0.85rem; }
-        .report-item-block { display: flex; flex-direction: column; gap: 4px; }
-        .report-option-row { display: flex; align-items: center; gap: 12px; font-size: 0.9rem; font-weight: 600; color: #1e293b; cursor: pointer; }
-        .report-option-row input[type="checkbox"] { width: 18px; height: 18px; cursor: pointer; accent-color: #0f172a; flex-shrink: 0; }
-        
-        .org-select-inline { display: none; position: relative; width: 220px; flex-shrink: 0; }
-        .org-select-inline.visible { display: inline-block; }
-
-        .date-range-container { display: none; align-items: center; gap: 8px; margin-left: 28px; margin-top: 4px; }
-        .date-range-container.visible { display: flex; }
-        .date-input { padding: 4px 8px; border: 1px solid #cbd5e1; border-radius: 4px; font-size: 0.85rem; background: #ffffff; }
-
-        .btn-export-large {
-            background-color: #0f172a;
-            color: #ffffff;
-            font-size: 1rem;
-            font-weight: 800;
-            padding: 0.75rem 2rem;
-            border: none;
-            border-radius: 8px;
-            cursor: pointer;
-            transition: background-color 0.2s ease, transform 0.1s ease;
-            text-align: center;
-            display: block;
-            width: 100%;
-            max-width: 320px;
-            margin: 0.5rem auto 0 auto;
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
-        }
-        .btn-export-large:hover { background-color: #334155; transform: translateY(-1px); }
-
-        .modal-overlay {
-            display: none;
-            position: fixed;
-            top: 0; left: 0; width: 100%; height: 100%;
-            background-color: rgba(15, 23, 42, 0.5);
-            backdrop-filter: blur(2px);
-            z-index: 3000;
-            align-items: center;
-            justify-content: center;
-        }
-        .modal-overlay.is-visible { display: flex; }
-        
-        .confirm-modal {
-            background: #ffffff;
-            border-radius: 12px;
-            width: 420px;
-            max-width: 90%;
-            padding: 1.5rem;
-            box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1);
-            border: 1px solid #e2e8f0;
-        }
-
-        .add-modal {
-            background: #ffffff;
-            border-radius: 12px;
-            width: 950px;
-            height: 80vh;
-            max-width: 95%;
-            max-height: 80vh;
-            display: flex;
-            flex-direction: column;
-            padding: 2rem;
-            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
-            border: 1px solid #cbd5e1;
-        }
-        .add-modal-body { flex: 1; overflow-y: auto; margin-top: 1rem; margin-bottom: 1rem; padding-right: 6px; }
-        
-        .counter-container { display: flex; gap: 1rem; align-items: center; margin-bottom: 1rem; justify-content: center; }
-        .counter-box-wrapper { display: flex; flex-direction: column; align-items: center; }
-        .spinner-btn { background: #f1f5f9; border: 1px solid #cbd5e1; cursor: pointer; width: 45px; height: 26px; font-weight: bold; font-size: 1rem; user-select: none; }
-        .spinner-btn:hover { background: #e2e8f0; }
-        .spinner-input { width: 45px; text-align: center; font-size: 1.4rem; font-weight: bold; border: 1px solid #cbd5e1; padding: 4px; margin: 2px 0; color: #000000; background: #ffffff; }
-
-        .add-row-item { display: grid; grid-template-columns: 1fr 2fr 1fr 1fr 1.5fr 1.5fr 1fr; gap: 8px; align-items: center; margin-bottom: 8px; background: #f8fafc; padding: 8px; border-radius: 6px; border: 1px solid #e2e8f0; }
-        .add-row-item input, .add-row-item select { width: 100%; padding: 6px; border: 1px solid #cbd5e1; border-radius: 4px; font-size: 0.85rem; color: #000000; background: #ffffff; }
-
-        .modal-title { font-size: 1.15rem; font-weight: 800; color: #0f172a; margin-bottom: 0.5rem; }
-        .modal-message { font-size: 0.95rem; color: #475569; margin-bottom: 1rem; line-height: 1.4; }
-        .modal-actions { display: flex; justify-content: flex-end; gap: 0.75rem; flex-shrink: 0; }
-        .btn-modal-cancel { padding: 0.5rem 1.25rem; border-radius: 6px; border: 1px solid #cbd5e1; background-color: #ffffff; color: #475569; font-size: 0.88rem; font-weight: 600; cursor: pointer; }
-        .btn-modal-cancel:hover { background-color: #f8fafc; }
-        .btn-modal-confirm { padding: 0.5rem 1.25rem; border-radius: 6px; border: none; background-color: #2563eb; color: #ffffff; font-size: 0.88rem; font-weight: 700; cursor: pointer; }
-        .btn-modal-confirm:hover { background-color: #1d4ed8; }
     </style>
 </head>
 <body>
-
-    <div id="hoverTooltip" class="hover-tooltip"></div>
-    
-    <img src="add.png" alt="Add Users" class="add-floating-btn" id="btnAddUserOpen" title="Add New Users">
 
     <header>
         <div class="header-content">
@@ -1073,1028 +506,693 @@ if ($stmt) {
 
     <div class="app-body">
         <aside class="side-panel">
-            <a href="a-org.php" class="nav-btn nav-btn-org">
+            <a href="admin.php" class="nav-btn nav-btn-org is-active" id="navBtnOrg">
                 <img src="org.png" alt="Organization" class="btn-icon">
             </a>
             <a href="a-activity.php" class="nav-btn nav-btn-activity">
                 <img src="act.png" alt="Activity" class="btn-icon">
             </a>
-            <a href="admin.php" class="nav-btn nav-btn-user is-active">
+            <a href="a-user.php" class="nav-btn nav-btn-user">
                 <img src="use.png" alt="User" class="btn-icon">
             </a>
         </aside>
 
-        <main>
-            <div class="content-wrapper">
-                <div class="filter-controls">
-                    <input type="text" id="searchInput" class="search-box" placeholder="Search by name or UID...">
-                    
-                    <select id="classFilter" class="class-select">
-                        <option value="ALL">Display All Classes</option>
-                        <?php foreach ($classes as $cls): ?>
-                            <option value="<?= htmlspecialchars($cls) ?>">Class <?= htmlspecialchars($cls) ?></option>
-                        <?php endforeach; ?>
-                    </select>
-                </div>
-
-                <div class="user-container" id="userContainer">
-                    <div class="table-header">
-                        <div data-sort="uid" class="sorted-asc">UID</div>
-                        <div data-sort="name">NAME</div>
-                        <div data-sort="class">CLASS</div>
-                        <div data-sort="cid">CID</div>
-                    </div>
-
-                    <div id="rowsWrapper">
-                        <?php if (!empty($users)): ?>
-                            <?php foreach ($users as $u): ?>
-                                <div class="user-row" 
-                                     data-uid="<?= htmlspecialchars($u['uid'] ?? '') ?>" 
-                                     data-name="<?= htmlspecialchars($u['name'] ?? '') ?>" 
-                                     data-class="<?= htmlspecialchars($u['class'] ?? '') ?>"
-                                     data-cid="<?= htmlspecialchars($u['cid'] ?? '') ?>"
-                                     data-email="<?= htmlspecialchars($u['email'] ?? '') ?>"
-                                     data-role="<?= htmlspecialchars($u['role'] ?? '') ?>"
-                                     data-orgs='<?= htmlspecialchars(json_encode($u['organisations'] ?? []), ENT_QUOTES, 'UTF-8') ?>'>
-                                    
-                                    <div class="user-field-value col-uid"><?= htmlspecialchars($u['uid'] ?? 'N/A') ?></div>
-                                    <div class="user-field-value col-name"><?= htmlspecialchars($u['name'] ?? 'N/A') ?></div>
-                                    <div class="user-field-value col-class"><?= htmlspecialchars($u['class'] ?? 'N/A') ?></div>
-                                    <div class="user-field-value col-cid"><?= htmlspecialchars($u['cid'] ?? 'N/A') ?></div>
-                                </div>
-                            <?php endforeach; ?>
-                        <?php endif; ?>
-                    </div>
-                </div>
+        <main id="mainContainer">
+            <div class="floating-controls">
+                <div class="control-box" id="editingModeBtn">Editing Mode</div>
+                <div class="control-box grey" id="modifyBtn" style="display: none;">Modify</div>
             </div>
 
-            <!-- Sliding Panel -->
-            <div class="sliding-panel" id="detailPanel">
-                <button class="close-arrow-btn" id="closePanelBtn" title="Close Panel">
-                    <img src="arrow.png" alt="Back Arrow" class="arrow-img">
-                </button>
+            <div class="orgs-horizontal-container">
+                <?php if (!empty($orgsData)): ?>
+                    <?php foreach ($orgsData as $org): 
+                        $hasImage = !empty($org['image_path']);
+                    ?>
+                        <div class="org-vertical-box existing-org-box <?= $hasImage ? 'has-image' : '' ?>" data-oid="<?= htmlspecialchars($org['oid']) ?>" data-original-name="<?= htmlspecialchars($org['oname']) ?>" data-original-tid="<?= htmlspecialchars($org['tid'] ?? '') ?>">
+                            <img src="arrow.png" alt="Delete" class="delete-arrow-btn delete-org-trigger" title="Delete Organisation">
 
-                <div class="panel-content">
-                    <div class="panel-upper-half">
-                        <div class="section-title">Modify</div>
-                        
-                        <div class="form-row-1">
-                            <div class="field-group">
-                                <label class="field-label">uId</label>
-                                <input type="text" id="panelUid" class="input-box" readonly>
-                            </div>
-                            <div class="field-group">
-                                <label class="field-label">Name</label>
-                                <input type="text" id="panelName" class="input-box input-box-large">
-                            </div>
-                            <div class="field-group">
-                                <label class="field-label">Class</label>
-                                <input type="text" id="panelClass" class="input-box input-box-large">
-                            </div>
-                            <div class="field-group">
-                                <label class="field-label">cid</label>
-                                <input type="text" id="panelCid" class="input-box">
-                            </div>
-                        </div>
-
-                        <div class="form-row-2">
-                            <div class="field-group">
-                                <label class="field-label">Email</label>
-                                <input type="email" id="panelEmail" class="input-box">
-                            </div>
-                            
-                            <div class="field-group">
-                                <label class="field-label">New Password (Plaintext)</label>
-                                <input type="password" id="panelPassword" class="input-box" placeholder="Type new password...">
-                            </div>
-
-                            <div class="field-group">
-                                <label class="field-label">Live Hashed Password (PHP Default)</label>
-                                <input type="text" id="panelHashedPassword" class="input-box" readonly placeholder="Hashed output appears here...">
-                            </div>
-
-                            <div class="field-group">
-                                <label class="field-label">Role</label>
-                                <input type="text" id="panelRole" class="input-box">
-                            </div>
-                        </div>
-
-                        <div class="field-group">
-                            <label class="field-label" id="panelOrgLabel">Organisations Enrolled:</label>
-                            <div class="dropdown-checklist-container">
-                                <div class="checklist-anchor" id="checklistAnchor">
-                                    <span id="checklistLabel">Select Organisations...</span>
-                                    <span>▼</span>
+                            <div class="org-header-section">
+                                <div class="org-title-row">
+                                    <div class="org-title-display" style="display: flex; align-items: center; width: 100%; justify-content: space-between;">
+                                        <div class="org-title" title="<?= htmlspecialchars($org['oname']) ?>"><?= htmlspecialchars($org['oid']) ?> - <?= htmlspecialchars($org['oname']) ?></div>
+                                    </div>
+                                    <div class="org-title-edit" style="display: none; width: 100%; gap: 4px; align-items: center;">
+                                        <input type="text" class="org-title-input edit-oid" value="<?= htmlspecialchars($org['oid']) ?>" placeholder="ID" style="width: 30px; flex-shrink: 0;">
+                                        <input type="text" class="org-title-input edit-oname" value="<?= htmlspecialchars($org['oname']) ?>" placeholder="Name" style="width: 160px; flex-shrink: 0;">
+                                    </div>
+                                    <label for="file-input-<?= htmlspecialchars($org['oid']) ?>" class="btn-upload-file photo-upload-btn" style="flex-shrink: 0;">
+                                        <?= $hasImage ? 'Change photo' : 'Choose photo' ?>
+                                    </label>
                                 </div>
-                                <div class="checklist-dropdown" id="checklistDropdown">
-                                    <?php foreach ($allOrganisations as $org): ?>
-                                        <label class="checklist-item">
-                                            <input type="checkbox" class="org-checkbox" value="<?= htmlspecialchars($org['oid']) ?>">
-                                            <span><?= htmlspecialchars($org['oid']) ?> - <?= htmlspecialchars($org['oname']) ?></span>
-                                        </label>
+                                
+                                <input type="file" id="file-input-<?= htmlspecialchars($org['oid']) ?>" class="device-file-input" accept="image/*" style="display: none;">
+                                
+                                <div class="image-preview-wrapper" style="display: <?= $hasImage ? 'block' : 'none' ?>;">
+                                    <img src="<?= htmlspecialchars($org['image_path']) ?>" alt="Preview" class="org-image-preview">
+                                    <img src="arrow.png" alt="Delete Photo" class="delete-photo-btn delete-photo-trigger" title="Delete Photo">
+                                </div>
+
+                                <div class="teacher-info">
+                                    <div class="teacher-display" style="text-align: center;">
+                                        Teacher: <span class="teacher-name-bold"><?= htmlspecialchars($org['teacher_name'] ?? 'Unassigned') ?></span>
+                                    </div>
+                                    <div class="teacher-edit" style="margin-top: 4px; position: relative;">
+                                        <div style="font-weight: 700; color: #475569; font-size: 0.75rem; margin-bottom: 2px;">Teacher Managing:</div>
+                                        <input type="text" class="teacher-input edit-tid" value="<?= htmlspecialchars($org['tid'] ?? '') ?>" placeholder="Select or type teacher UID/name" autocomplete="off">
+                                        <div class="custom-dropdown-list edit-teacher-dropdown">
+                                            <?php foreach ($teachersList as $t): ?>
+                                                <div class="custom-dropdown-item" data-uid="<?= htmlspecialchars($t['uid']) ?>" data-name="<?= htmlspecialchars($t['name']) ?>">
+                                                    [<?= htmlspecialchars($t['uid']) ?>] <?= htmlspecialchars($t['name']) ?>
+                                                </div>
+                                            <?php endforeach; ?>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="members-section-title"><?= count($org['members']) ?> Members</div>
+                            
+                            <div class="members-table-wrapper members-view-display">
+                                <?php if (!empty($org['members'])): ?>
+                                    <table class="members-table">
+                                        <thead>
+                                            <tr>
+                                                <th>UID</th>
+                                                <th>Name</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            <?php foreach ($org['members'] as $member): 
+                                                $isMonitor = in_array($member['uid'], $org['monitors']);
+                                            ?>
+                                                <tr class="<?= $isMonitor ? 'member-row-monitor' : '' ?>">
+                                                    <td><?= htmlspecialchars($member['uid']) ?></td>
+                                                    <td><?= htmlspecialchars($member['name']) ?></td>
+                                                </tr>
+                                            <?php endforeach; ?>
+                                        </tbody>
+                                    </table>
+                                <?php else: ?>
+                                    <div class="no-members" style="padding: 10px; font-size: 0.85rem; color: #64748b;">No members enrolled</div>
+                                <?php endif; ?>
+                            </div>
+
+                            <div class="members-table-wrapper checklist-container members-view-edit" style="display: none;">
+                                <input type="text" class="member-search-input" placeholder="Search student...">
+                                <div class="checklist-items-scroll">
+                                    <?php 
+                                    $memberUids = array_column($org['members'], 'uid');
+                                    foreach ($studentsList as $s): 
+                                        $isMem = in_array($s['uid'], $memberUids);
+                                        $isMon = in_array($s['uid'], $org['monitors']);
+                                        $stateClass = '';
+                                        if ($isMon) $stateClass = 'state-monitor';
+                                        else if ($isMem) $stateClass = 'state-member';
+                                    ?>
+                                        <div class="checklist-item <?= $stateClass ?>" data-search="<?= htmlspecialchars(strtolower($s['uid'] . ' ' . $s['name'])) ?>" data-uid="<?= htmlspecialchars($s['uid']) ?>">
+                                            <span class="state-box"></span>
+                                            <span>[<?= htmlspecialchars($s['uid']) ?>] <?= htmlspecialchars($s['name']) ?></span>
+                                        </div>
                                     <?php endforeach; ?>
                                 </div>
                             </div>
                         </div>
+                    <?php endforeach; ?>
+                <?php endif; ?>
 
-                        <div class="panel-actions-row">
-                            <button type="button" class="btn-modify" id="btnModify" disabled>Modify</button>
-                            <button type="button" class="btn-delete-user" id="btnDeleteUser">Delete User</button>
+                <div class="org-vertical-box" id="newOrgBox" data-oid="new_org" style="display: none;">
+                    <div class="org-header-section">
+                        <div class="org-title-row">
+                            <input type="text" id="newOrgId" class="org-title-input" placeholder="ID" style="width: 42px; flex-shrink: 0;">
+                            <input type="text" id="newOrgName" class="org-title-input" placeholder="New Organisation" style="flex: 1; min-width: 0;">
+                            <label for="file-input-new" class="btn-upload-file photo-upload-btn" style="flex-shrink: 0;">Choose photo</label>
+                            <input type="file" id="file-input-new" class="device-file-input" accept="image/*" style="display: none;">
+                        </div>
+
+                        <div class="image-preview-wrapper" style="display: none;">
+                            <img src="" alt="Preview" class="org-image-preview">
+                            <img src="arrow.png" alt="Delete Photo" class="delete-photo-btn delete-photo-trigger" title="Delete Photo">
+                        </div>
+
+                        <div class="teacher-info">
+                            <div style="margin-bottom: 2px; font-weight: 700; color: #475569;">Teacher Managing:</div>
+                            <input type="text" id="newOrgTeacher" class="teacher-input" placeholder="Select or type teacher UID/name" autocomplete="off" style="display: block;">
+                            <div id="customTeacherDropdown" class="custom-dropdown-list">
+                                <?php foreach ($teachersList as $t): ?>
+                                    <div class="custom-dropdown-item" data-uid="<?= htmlspecialchars($t['uid']) ?>" data-name="<?= htmlspecialchars($t['name']) ?>">
+                                        [<?= htmlspecialchars($t['uid']) ?>] <?= htmlspecialchars($t['name']) ?>
+                                    </div>
+                                <?php endforeach; ?>
+                            </div>
                         </div>
                     </div>
 
-                    <div class="panel-lower-half" id="exportSectionContainer" style="display:none;">
-                        <div class="section-title">Export Reports</div>
-                        
-                        <form id="exportForm" method="POST" action="">
-                            <input type="hidden" name="action" value="export_pdf">
-                            <input type="hidden" name="export_uid" id="formExportUid">
-
-                            <div class="report-checkbox-group">
-                                <div class="report-item-block">
-                                    <div class="report-option-row">
-                                        <input type="checkbox" id="chkAttendance" name="opt_attendance" value="1">
-                                        <span>Attendance Record</span>
-                                        <div class="org-select-inline" id="attOrgWrapper">
-                                            <div class="checklist-anchor" id="attChecklistAnchor">
-                                                <span id="attChecklistLabel">Select Orgs...</span>
-                                                <span>▼</span>
-                                            </div>
-                                            <div class="checklist-dropdown" id="attChecklistDropdown"></div>
-                                        </div>
-                                    </div>
-                                    <div class="date-range-container" id="dateRangeWrapper">
-                                        <span class="field-label">From:</span>
-                                        <input type="date" id="exportStartDate" name="export_start" class="date-input" value="2026-09-01">
-                                        <span class="field-label">To:</span>
-                                        <input type="date" id="exportEndDate" name="export_end" class="date-input">
-                                    </div>
+                    <div class="members-section-title">Members &amp; Monitors Checklist:</div>
+                    <input type="text" id="memberSearch" class="member-search-input" placeholder="Search UID or name..." style="display: block;">
+                    <div class="members-table-wrapper checklist-container" id="membersChecklistContainer">
+                        <div class="checklist-items-scroll">
+                            <?php foreach ($studentsList as $s): ?>
+                                <div class="checklist-item" data-search="<?= htmlspecialchars(strtolower($s['uid'] . ' ' . $s['name'])) ?>" data-uid="<?= htmlspecialchars($s['uid']) ?>">
+                                    <span class="state-box"></span>
+                                    <span>[<?= htmlspecialchars($s['uid']) ?>] <?= htmlspecialchars($s['name']) ?></span>
                                 </div>
-
-                                <div class="report-item-block">
-                                    <div class="report-option-row">
-                                        <input type="checkbox" id="chkParticipation" name="opt_participation" value="1">
-                                        <span>Average Participation Rating</span>
-                                        <div class="org-select-inline" id="partOrgWrapper">
-                                            <div class="checklist-anchor" id="partChecklistAnchor">
-                                                <span id="partChecklistLabel">Select Orgs...</span>
-                                                <span>▼</span>
-                                            </div>
-                                            <div class="checklist-dropdown" id="partChecklistDropdown"></div>
-                                        </div>
-                                    </div>
-                                </div>
-
-                                <div class="report-item-block">
-                                    <div class="report-option-row">
-                                        <input type="checkbox" id="chkSatisfactory" name="opt_satisfactory" value="1">
-                                        <span>Average Satisfactory Rating</span>
-                                        <div class="org-select-inline" id="satOrgWrapper">
-                                            <div class="checklist-anchor" id="satChecklistAnchor">
-                                                <span id="satChecklistLabel">Select Orgs...</span>
-                                                <span>▼</span>
-                                            </div>
-                                            <div class="checklist-dropdown" id="satChecklistDropdown"></div>
-                                        </div>
-                                    </div>
-                                </div>
-
-                                <label class="report-option-row" style="margin-top: 6px; border-top: 1px dashed #cbd5e1; padding-top: 8px;">
-                                    <input type="checkbox" id="chkSelectAll">
-                                    <span style="font-weight: 800; color: #2563eb;">Select All Options</span>
-                                </label>
-                            </div>
-
-                            <button type="button" class="btn-export-large" id="btnExportPdf">Export PDF</button>
-                        </form>
+                            <?php endforeach; ?>
+                        </div>
                     </div>
+
+                    <button type="button" class="btn-save-org" id="saveNewOrgBtn" style="display: block;">Create Organisation</button>
                 </div>
             </div>
         </main>
     </div>
 
-    <div class="modal-overlay" id="confirmModal">
-        <div class="confirm-modal">
-            <div class="modal-title" id="modalTitle">Confirm Action</div>
-            <div class="modal-message" id="modalMessage">Are you sure you want to proceed?</div>
-            <div class="modal-actions">
-                <button type="button" class="btn-modal-cancel" id="btnModalCancel">Cancel</button>
-                <button type="button" class="btn-modal-confirm" id="btnModalConfirm">Confirm</button>
+    <div class="crop-modal-overlay" id="cropModal">
+        <div class="crop-modal-box">
+            <h3>Crop Photo to Square</h3>
+            <div class="crop-viewport" id="cropViewport">
+                <img id="cropImage" src="" alt="Source">
             </div>
-        </div>
-    </div>
-
-    <div class="modal-overlay" id="addUserModal">
-        <div class="add-modal">
-            <div class="modal-title">Add New Users</div>
-            <div class="modal-message">Select how many user entries you wish to add:</div>
-            
-            <div class="counter-container">
-                <div class="counter-box-wrapper">
-                    <button type="button" class="spinner-btn" id="tensUp">▲</button>
-                    <input type="text" id="tensInput" class="spinner-input" value="0" readonly>
-                    <button type="button" class="spinner-btn" id="tensDown">▼</button>
-                </div>
-                <div class="counter-box-wrapper">
-                    <button type="button" class="spinner-btn" id="unitsUp">▲</button>
-                    <input type="text" id="unitsInput" class="spinner-input" value="0" readonly>
-                    <button type="button" class="spinner-btn" id="unitsDown">▼</button>
-                </div>
+            <div class="zoom-slider-con">
+                <span>Zoom:</span>
+                <input type="range" id="zoomSlider" min="0.5" max="3" step="0.05" value="1">
             </div>
-
-            <div id="addRowsContainer" class="add-modal-body"></div>
-
-            <div class="modal-actions">
-                <button type="button" class="btn-modal-cancel" id="btnAddCancel">Cancel</button>
-                <button type="button" class="btn-modal-confirm" id="btnAddSave" style="display:none;">Save Users</button>
+            <div class="crop-modal-actions">
+                <button type="button" class="btn-modal-cancel" id="cancelCropBtn">Cancel</button>
+                <button type="button" class="btn-modal-confirm" id="confirmCropBtn">Confirm</button>
             </div>
         </div>
     </div>
 
     <script>
-        const existingUsers = <?php echo json_encode($existingUsersData); ?>;
-
         function updateClock() {
             const now = new Date();
-            document.getElementById('live-time').textContent = now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true });
-            document.getElementById('live-date').textContent = now.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
+            const timeEl = document.getElementById('live-time');
+            const dateEl = document.getElementById('live-date');
+            if (timeEl) timeEl.textContent = now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true });
+            if (dateEl) dateEl.textContent = now.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
         }
         updateClock();
         setInterval(updateClock, 1000);
 
-        let userRows = Array.from(document.querySelectorAll('.user-row'));
-        const rowsWrapper = document.getElementById('rowsWrapper');
-        const tooltip = document.getElementById('hoverTooltip');
-        const searchInput = document.getElementById('searchInput');
-        const classFilter = document.getElementById('classFilter');
-        
-        const detailPanel = document.getElementById('detailPanel');
-        const closePanelBtn = document.getElementById('closePanelBtn');
-        const btnDeleteUser = document.getElementById('btnDeleteUser');
-        const btnModify = document.getElementById('btnModify');
-
-        const panelUid = document.getElementById('panelUid');
-        const panelName = document.getElementById('panelName');
-        const panelClass = document.getElementById('panelClass');
-        const panelCid = document.getElementById('panelCid');
-        const panelEmail = document.getElementById('panelEmail');
-        const panelPassword = document.getElementById('panelPassword');
-        const panelHashedPassword = document.getElementById('panelHashedPassword');
-        const panelRole = document.getElementById('panelRole');
-        const panelOrgLabel = document.getElementById('panelOrgLabel');
-        const exportSectionContainer = document.getElementById('exportSectionContainer');
-
-        const checklistAnchor = document.getElementById('checklistAnchor');
-        const checklistDropdown = document.getElementById('checklistDropdown');
-        const checklistLabel = document.getElementById('checklistLabel');
-        const orgCheckboxes = document.querySelectorAll('.org-checkbox');
-
-        const confirmModal = document.getElementById('confirmModal');
-        const modalTitle = document.getElementById('modalTitle');
-        const modalMessage = document.getElementById('modalMessage');
-        const btnModalCancel = document.getElementById('btnModalCancel');
-        const btnModalConfirm = document.getElementById('btnModalConfirm');
-
-        const addUserModal = document.getElementById('addUserModal');
-        const btnAddUserOpen = document.getElementById('btnAddUserOpen');
-        const btnAddCancel = document.getElementById('btnAddCancel');
-        const tensInput = document.getElementById('tensInput');
-        const unitsInput = document.getElementById('unitsInput');
-        const tensUp = document.getElementById('tensUp');
-        const tensDown = document.getElementById('tensDown');
-        const unitsUp = document.getElementById('unitsUp');
-        const unitsDown = document.getElementById('unitsDown');
-        const addRowsContainer = document.getElementById('addRowsContainer');
-
-        const chkAttendance = document.getElementById('chkAttendance');
-        const chkParticipation = document.getElementById('chkParticipation');
-        const chkSatisfactory = document.getElementById('chkSatisfactory');
-        const chkSelectAll = document.getElementById('chkSelectAll');
-
-        const attOrgWrapper = document.getElementById('attOrgWrapper');
-        const partOrgWrapper = document.getElementById('partOrgWrapper');
-        const satOrgWrapper = document.getElementById('satOrgWrapper');
-
-        const attChecklistAnchor = document.getElementById('attChecklistAnchor');
-        const attChecklistDropdown = document.getElementById('attChecklistDropdown');
-        const attChecklistLabel = document.getElementById('attChecklistLabel');
-
-        const partChecklistAnchor = document.getElementById('partChecklistAnchor');
-        const partChecklistDropdown = document.getElementById('partChecklistDropdown');
-        const partChecklistLabel = document.getElementById('partChecklistLabel');
-
-        const satChecklistAnchor = document.getElementById('satChecklistAnchor');
-        const satChecklistDropdown = document.getElementById('satChecklistDropdown');
-        const satChecklistLabel = document.getElementById('satChecklistLabel');
-
-        const dateRangeWrapper = document.getElementById('dateRangeWrapper');
-        const btnExportPdf = document.getElementById('btnExportPdf');
-        const exportStartDate = document.getElementById('exportStartDate');
-        const exportEndDate = document.getElementById('exportEndDate');
-        const exportForm = document.getElementById('exportForm');
-        const formExportUid = document.getElementById('formExportUid');
-
-        let currentSortField = 'uid';
-        let currentSortAsc = true;
-
-        function sortTable(field, asc = true) {
-            currentSortField = field;
-            currentSortAsc = asc;
-
-            userRows.sort((a, b) => {
-                let valA = (a.getAttribute('data-' + field) || '').toLowerCase();
-                let valB = (b.getAttribute('data-' + field) || '').toLowerCase();
-
-                if (field === 'uid' || field === 'cid') {
-                    let numA = parseFloat(valA);
-                    let numB = parseFloat(valB);
-                    if (!isNaN(numA) && !isNaN(numB)) {
-                        return asc ? numA - numB : numB - numA;
+        const mainContainer = document.getElementById('mainContainer');
+        if (mainContainer) {
+            mainContainer.addEventListener('wheel', function(e) {
+                if (!e.target.closest('.org-vertical-box')) {
+                    if (e.deltaY !== 0) {
+                        mainContainer.scrollLeft += e.deltaY;
+                        e.preventDefault();
                     }
                 }
-
-                if (valA < valB) return asc ? -1 : 1;
-                if (valA > valB) return asc ? 1 : -1;
-                return 0;
-            });
-
-            userRows.forEach(row => rowsWrapper.appendChild(row));
+            }, { passive: false });
         }
 
-        document.querySelectorAll('.table-header div').forEach(header => {
-            header.addEventListener('click', () => {
-                const field = header.getAttribute('data-sort');
-                if (currentSortField === field) {
-                    currentSortAsc = !currentSortAsc;
-                } else {
-                    currentSortField = field;
-                    currentSortAsc = true;
+        const shadePalette = [
+            [52, 102, 235],  
+            [85, 82, 222],   
+            [122, 54, 186],  
+            [184, 52, 139],  
+            [224, 48, 105],  
+            [255, 30, 30],   
+            [250, 95, 62],   
+            [250, 128, 52],  
+            [252, 172, 63],  
+            [254, 223, 115]  
+        ];
+
+        function updateBoxColorsOnScroll() {
+            if (!mainContainer) return;
+            const boxes = mainContainer.querySelectorAll('.org-vertical-box');
+            const containerWidth = mainContainer.clientWidth;
+
+            boxes.forEach((box) => {
+                const boxRect = box.getBoundingClientRect();
+                const boxCenter = boxRect.left + boxRect.width / 2;
+                
+                let ratio = boxCenter / containerWidth;
+                ratio = Math.max(0, Math.min(1, ratio));
+
+                const scaled = ratio * (shadePalette.length - 1);
+                const index = Math.floor(scaled);
+                const remainder = scaled - index;
+
+                let color1 = shadePalette[index];
+                let color2 = shadePalette[Math.min(index + 1, shadePalette.length - 1)];
+
+                const r = Math.round(color1[0] + (color2[0] - color1[0]) * remainder);
+                const g = Math.round(color1[1] + (color2[1] - color1[1]) * remainder);
+                const b = Math.round(color1[2] + (color2[2] - color1[2]) * remainder);
+
+                box.style.backgroundColor = 'rgba(' + r + ', ' + g + ', ' + b + ', 0.35)';
+            });
+        }
+
+        if (mainContainer) {
+            mainContainer.addEventListener('scroll', updateBoxColorsOnScroll);
+            window.addEventListener('resize', updateBoxColorsOnScroll);
+            window.addEventListener('DOMContentLoaded', updateBoxColorsOnScroll);
+        }
+
+        let isEditingMode = false;
+        let hasChanges = false;
+        const editingModeBtn = document.getElementById('editingModeBtn');
+        const modifyBtn = document.getElementById('modifyBtn');
+        const newOrgBox = document.getElementById('newOrgBox');
+
+        editingModeBtn.addEventListener('click', function() {
+            isEditingMode = !isEditingMode;
+            if (isEditingMode) {
+                document.body.classList.add('editing-mode');
+                editingModeBtn.textContent = 'Close Editing Mode';
+                newOrgBox.style.display = 'flex';
+                modifyBtn.style.display = 'block';
+                modifyBtn.className = 'control-box grey';
+                updateBoxColorsOnScroll();
+            } else {
+                window.location.href = window.location.pathname;
+            }
+        });
+
+        window.addEventListener('DOMContentLoaded', () => {
+            const urlParams = new URLSearchParams(window.location.search);
+            if (urlParams.get('editing') === 'true') {
+                editingModeBtn.click();
+            }
+            if (urlParams.get('scroll') === 'right') {
+                if (mainContainer) {
+                    mainContainer.scrollLeft = mainContainer.scrollWidth;
                 }
+            }
+            updateBoxColorsOnScroll();
+        });
 
-                document.querySelectorAll('.table-header div').forEach(h => {
-                    h.classList.remove('sorted-asc', 'sorted-desc');
+        document.addEventListener('input', function(e) {
+            if (isEditingMode && (e.target.classList.contains('edit-oid') || e.target.classList.contains('edit-oname') || e.target.classList.contains('edit-tid'))) {
+                hasChanges = true;
+                modifyBtn.className = 'control-box blue';
+            }
+        });
+
+        document.addEventListener('click', function(e) {
+            const checklistItem = e.target.closest('.checklist-item');
+            if (checklistItem && (isEditingMode || checklistItem.closest('#newOrgBox'))) {
+                if (checklistItem.classList.contains('state-member')) {
+                    checklistItem.classList.remove('state-member');
+                    checklistItem.classList.add('state-monitor');
+                } else if (checklistItem.classList.contains('state-monitor')) {
+                    checklistItem.classList.remove('state-monitor');
+                } else {
+                    checklistItem.classList.add('state-member');
+                }
+                hasChanges = true;
+                modifyBtn.className = 'control-box blue';
+            }
+        });
+
+        document.addEventListener('input', function(e) {
+            if (e.target.classList.contains('member-search-input') && e.target.closest('.org-vertical-box')) {
+                const term = e.target.value.toLowerCase();
+                e.target.closest('.org-vertical-box').querySelectorAll('.checklist-item').forEach(item => {
+                    const text = item.getAttribute('data-search');
+                    item.style.display = text.includes(term) ? 'flex' : 'none';
                 });
-                header.classList.add(currentSortAsc ? 'sorted-asc' : 'sorted-desc');
-
-                sortTable(currentSortField, currentSortAsc);
-            });
-        });
-
-        sortTable('uid', true);
-
-        chkAttendance.addEventListener('change', () => {
-            if (chkAttendance.checked) {
-                attOrgWrapper.classList.add('visible');
-                dateRangeWrapper.classList.add('visible');
-            } else {
-                attOrgWrapper.classList.remove('visible');
-                dateRangeWrapper.classList.remove('visible');
             }
         });
 
-        chkParticipation.addEventListener('change', () => {
-            if (chkParticipation.checked) {
-                partOrgWrapper.classList.add('visible');
-            } else {
-                partOrgWrapper.classList.remove('visible');
+        document.addEventListener('focus', function(e) {
+            if (e.target.classList.contains('teacher-input') || e.target.id === 'newOrgTeacher') {
+                const dropdown = e.target.nextElementSibling;
+                if (dropdown && dropdown.classList.contains('custom-dropdown-list')) {
+                    dropdown.style.display = 'block';
+                }
+            }
+        }, true);
+
+        document.addEventListener('input', function(e) {
+            if (e.target.classList.contains('teacher-input') || e.target.id === 'newOrgTeacher') {
+                const term = e.target.value.toLowerCase();
+                const dropdown = e.target.nextElementSibling;
+                if (dropdown && dropdown.classList.contains('custom-dropdown-list')) {
+                    dropdown.style.display = 'block';
+                    dropdown.querySelectorAll('.custom-dropdown-item').forEach(item => {
+                        const text = item.textContent.toLowerCase();
+                        item.style.display = text.includes(term) ? 'block' : 'none';
+                    });
+                }
             }
         });
 
-        chkSatisfactory.addEventListener('change', () => {
-            if (chkSatisfactory.checked) {
-                satOrgWrapper.classList.add('visible');
-            } else {
-                satOrgWrapper.classList.remove('visible');
-            }
-        });
-
-        chkSelectAll.addEventListener('change', () => {
-            const isChecked = chkSelectAll.checked;
-            chkAttendance.checked = isChecked;
-            chkParticipation.checked = isChecked;
-            chkSatisfactory.checked = isChecked;
-
-            if (isChecked) {
-                attOrgWrapper.classList.add('visible');
-                partOrgWrapper.classList.add('visible');
-                satOrgWrapper.classList.add('visible');
-                dateRangeWrapper.classList.add('visible');
-            } else {
-                attOrgWrapper.classList.remove('visible');
-                partOrgWrapper.classList.remove('visible');
-                satOrgWrapper.classList.remove('visible');
-                dateRangeWrapper.classList.remove('visible');
-            }
-        });
-
-        function setupSubChecklist(anchor, dropdown, labelElem, userOrgs, prefix) {
-            dropdown.innerHTML = `
-                <label class="checklist-item">
-                    <input type="checkbox" class="${prefix}-org-cb" value="ALL" checked>
-                    <span>All Organisations</span>
-                </label>
-            `;
-            userOrgs.forEach(o => {
-                dropdown.innerHTML += `
-                    <label class="checklist-item">
-                        <input type="checkbox" class="${prefix}-org-cb" value="${o.oid}">
-                        <span>${o.oid} - ${o.oname}</span>
-                    </label>
-                `;
-            });
-
-            const checkboxes = dropdown.querySelectorAll(`.${prefix}-org-cb`);
-            const allCb = dropdown.querySelector(`input[value="ALL"]`);
-
-            checkboxes.forEach(cb => {
-                cb.addEventListener('change', () => {
-                    updateSubSummary(checkboxes, labelElem, allCb);
-                });
-            });
-
-            anchor.onclick = (e) => {
-                e.stopPropagation();
-                dropdown.classList.toggle('visible');
-            };
-
-            updateSubSummary(checkboxes, labelElem, allCb);
-        }
-
-        function updateSubSummary(checkboxes, labelElem, allCb) {
-            const checked = Array.from(checkboxes).filter(cb => cb.checked);
-            if (checked.length === 0) {
-                allCb.checked = true;
-                labelElem.textContent = "All Organisations";
-            } else if (allCb.checked && checked.length > 1) {
-                labelElem.textContent = `All Organisations + ${checked.length - 1} Org(s)`;
-            } else if (allCb.checked) {
-                labelElem.textContent = "All Organisations";
-            } else {
-                labelElem.textContent = `${checked.length} Selected`;
-            }
-        }
-
-        document.addEventListener('click', (e) => {
-            if (!attChecklistAnchor.contains(e.target) && !attChecklistDropdown.contains(e.target)) attChecklistDropdown.classList.remove('visible');
-            if (!partChecklistAnchor.contains(e.target) && !partChecklistDropdown.contains(e.target)) partChecklistDropdown.classList.remove('visible');
-            if (!satChecklistAnchor.contains(e.target) && !satChecklistDropdown.contains(e.target)) satChecklistDropdown.classList.remove('visible');
-        });
-        
-        let onConfirmCallback = null;
-        let onCancelCallback = null;
-        let activeRow = null;
-        let initialData = {};
-
-        panelPassword.addEventListener('input', async () => {
-            const val = panelPassword.value;
-            checkFormChanged();
-            if (!val) {
-                panelHashedPassword.value = '';
+        document.addEventListener('click', function(e) {
+            const dropdownItem = e.target.closest('.custom-dropdown-item');
+            if (dropdownItem) {
+                const dropdown = dropdownItem.closest('.custom-dropdown-list');
+                const input = dropdown.previousElementSibling;
+                input.value = dropdownItem.getAttribute('data-uid');
+                dropdown.style.display = 'none';
+                hasChanges = true;
+                modifyBtn.className = 'control-box blue';
                 return;
             }
-            try {
-                const res = await fetch(window.location.href, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ action: 'hash_preview', password: val })
-                });
-                const data = await res.json();
-                if (data.success) {
-                    panelHashedPassword.value = data.hash;
-                }
-            } catch (err) {
-                console.error('Hash preview failed', err);
+
+            if (!e.target.closest('.teacher-info')) {
+                document.querySelectorAll('.custom-dropdown-list').forEach(d => d.style.display = 'none');
             }
         });
 
-        function attachRowListeners() {
-            userRows.forEach(row => {
-                row.removeEventListener('mousemove', row._mouseMoveHandler);
-                row.removeEventListener('mouseleave', row._mouseLeaveHandler);
-                row.removeEventListener('click', row._clickHandler);
+        modifyBtn.addEventListener('click', function() {
+            if (!hasChanges || modifyBtn.classList.contains('grey')) return;
 
-                row._mouseMoveHandler = (e) => {
-                    const name = row.getAttribute('data-name') || 'N/A';
-                    const cls = row.getAttribute('data-class') || 'N/A';
-                    const cid = row.getAttribute('data-cid') || 'N/A';
-                    const role = (row.getAttribute('data-role') || 'student').toLowerCase();
-                    
-                    let orgs = [];
-                    try { orgs = JSON.parse(row.getAttribute('data-orgs') || "[]"); } catch (err) { orgs = []; }
-                    
-                    const orgTitle = role === 'student' ? 'Organisations Enrolled' : 'Organisations Managed';
-                    
-                    let orgListHTML = '';
-                    if (orgs.length > 0) {
-                        orgListHTML = orgs.map((o, index) => `${index + 1}. ${o.oname}`).join('<br>');
-                    } else {
-                        orgListHTML = 'None';
+            if (confirm('Are you sure you want to modify these organisations?')) {
+                const promises = [];
+                const allOids = [];
+                let hasDuplicate = false;
+
+                document.querySelectorAll('.existing-org-box').forEach(box => {
+                    const newOid = box.querySelector('.edit-oid').value.trim();
+                    if (allOids.includes(newOid)) {
+                        hasDuplicate = true;
                     }
+                    allOids.push(newOid);
+                });
 
-                    tooltip.innerHTML = `
-                        <strong>${name}</strong> &nbsp; <strong>Class ${cls}</strong> &nbsp; <strong>CID: ${cid}</strong>
-                        <hr style="border:0; border-top:1px solid #cbd5e1; margin:8px 0;">
-                        <div style="font-weight:700; margin-bottom:4px; color:#475569;">${orgTitle}:</div>
-                        <div style="padding-left:4px;">${orgListHTML}</div>
-                    `;
+                if (hasDuplicate) {
+                    alert('Duplicate Organisation IDs are not allowed.');
+                    return;
+                }
+
+                document.querySelectorAll('.existing-org-box').forEach(box => {
+                    const oldOid = box.getAttribute('data-oid');
+                    const newOid = box.querySelector('.edit-oid').value.trim();
+                    const oname = box.querySelector('.edit-oname').value.trim();
+                    const tid = box.querySelector('.edit-tid').value.trim();
                     
-                    tooltip.style.display = 'block';
-                    tooltip.style.left = (e.clientX + 15) + 'px';
-                    tooltip.style.top = (e.clientY + 15) + 'px';
-                };
-
-                row._mouseLeaveHandler = () => {
-                    tooltip.style.display = 'none';
-                };
-
-                row._clickHandler = () => {
-                    activeRow = row;
-                    tooltip.style.display = 'none';
-
-                    const uid = row.getAttribute('data-uid');
-                    const roleVal = (row.getAttribute('data-role') || 'student').toLowerCase();
-
-                    panelUid.value = uid;
-                    formExportUid.value = uid;
-                    panelName.value = row.getAttribute('data-name');
-                    panelClass.value = row.getAttribute('data-class');
-                    panelCid.value = row.getAttribute('data-cid');
-                    panelEmail.value = row.getAttribute('data-email');
+                    const members = [];
+                    const monitors = [];
                     
-                    panelPassword.value = '';
-                    panelHashedPassword.value = '';
-                    
-                    if (roleVal === 'student') {
-                        exportSectionContainer.style.display = 'flex';
-                    } else {
-                        exportSectionContainer.style.display = 'none';
-                    }
-
-                    chkAttendance.checked = false;
-                    chkParticipation.checked = false;
-                    chkSatisfactory.checked = false;
-                    chkSelectAll.checked = false;
-                    
-                    attOrgWrapper.classList.remove('visible');
-                    partOrgWrapper.classList.remove('visible');
-                    satOrgWrapper.classList.remove('visible');
-                    dateRangeWrapper.classList.remove('visible');
-
-                    exportStartDate.value = '2026-09-01';
-                    exportEndDate.value = new Date().toISOString().split('T')[0];
-
-                    panelRole.value = row.getAttribute('data-role') || 'student';
-                    
-                    if (roleVal === 'student') {
-                        panelOrgLabel.textContent = 'Organisations Enrolled:';
-                    } else {
-                        panelOrgLabel.textContent = 'Organisations Managed:';
-                    }
-
-                    let userOrgs = [];
-                    try { userOrgs = JSON.parse(row.getAttribute('data-orgs') || "[]"); } catch (e) { userOrgs = []; }
-                    const enrolledOids = userOrgs.map(o => String(o.oid));
-
-                    setupSubChecklist(attChecklistAnchor, attChecklistDropdown, attChecklistLabel, userOrgs, 'att');
-                    setupSubChecklist(partChecklistAnchor, partChecklistDropdown, partChecklistLabel, userOrgs, 'part');
-                    setupSubChecklist(satChecklistAnchor, satChecklistDropdown, satChecklistLabel, userOrgs, 'sat');
-
-                    orgCheckboxes.forEach(cb => {
-                        cb.checked = enrolledOids.includes(cb.value);
+                    box.querySelectorAll('.members-view-edit .checklist-item').forEach(item => {
+                        const uid = item.getAttribute('data-uid');
+                        if (item.classList.contains('state-monitor')) {
+                            members.push(uid);
+                            monitors.push(uid);
+                        } else if (item.classList.contains('state-member')) {
+                            members.push(uid);
+                        }
                     });
 
-                    updateChecklistSummary();
-                    initialData = getCurrentState();
-                    resetModifyButton();
+                    const formData = new FormData();
+                    formData.append('action', 'update_org');
+                    formData.append('old_oid', oldOid);
+                    formData.append('new_oid', newOid);
+                    formData.append('oname', oname);
+                    formData.append('tid', tid);
+                    members.forEach(m => formData.append('members[]', m));
+                    monitors.forEach(m => formData.append('monitors[]', m));
 
-                    detailPanel.classList.add('is-open');
-                };
-
-                row.addEventListener('mousemove', row._mouseMoveHandler);
-                row.addEventListener('mouseleave', row._mouseLeaveHandler);
-                row.addEventListener('click', row._clickHandler);
-            });
-        }
-        attachRowListeners();
-
-        panelRole.addEventListener('input', () => {
-            const roleVal = panelRole.value.trim().toLowerCase();
-            if (roleVal === 'student') {
-                panelOrgLabel.textContent = 'Organisations Enrolled:';
-                exportSectionContainer.style.display = 'flex';
-            } else {
-                panelOrgLabel.textContent = 'Organisations Managed:';
-                exportSectionContainer.style.display = 'none';
-            }
-            checkFormChanged();
-        });
-
-        function filterUsers() {
-            const query = searchInput.value.toLowerCase().trim();
-            const selectedClass = classFilter.value;
-
-            userRows.forEach(row => {
-                const uid = (row.getAttribute('data-uid') || '').toLowerCase();
-                const name = (row.getAttribute('data-name') || '').toLowerCase();
-                const cls = (row.getAttribute('data-class') || '');
-
-                const matchesSearch = uid.includes(query) || name.includes(query);
-                const matchesClass = selectedClass === 'ALL' || cls === selectedClass;
-
-                if (matchesSearch && matchesClass) {
-                    row.style.display = 'grid';
-                } else {
-                    row.style.display = 'none';
-                }
-            });
-        }
-
-        searchInput.addEventListener('input', filterUsers);
-        classFilter.addEventListener('change', filterUsers);
-
-        function showConfirmModal(title, message, isDanger, confirmCb, cancelCb = null) {
-            modalTitle.textContent = title;
-            modalMessage.textContent = message;
-            if (isDanger) {
-                btnModalConfirm.classList.add('danger');
-            } else {
-                btnModalConfirm.classList.remove('danger');
-            }
-            onConfirmCallback = confirmCb;
-            onCancelCallback = cancelCb;
-            confirmModal.classList.add('is-visible');
-        }
-
-        btnModalCancel.addEventListener('click', () => {
-            confirmModal.classList.remove('is-visible');
-            if (onCancelCallback) onCancelCallback();
-            onConfirmCallback = null;
-            onCancelCallback = null;
-        });
-
-        btnModalConfirm.addEventListener('click', () => {
-            confirmModal.classList.remove('is-visible');
-            if (onConfirmCallback) onConfirmCallback();
-            onConfirmCallback = null;
-            onCancelCallback = null;
-        });
-
-        checklistAnchor.addEventListener('click', () => {
-            checklistDropdown.classList.toggle('visible');
-        });
-
-        document.addEventListener('click', (e) => {
-            if (!checklistAnchor.contains(e.target) && !checklistDropdown.contains(e.target)) {
-                checklistDropdown.classList.remove('visible');
-            }
-        });
-
-        function updateChecklistSummary() {
-            const checkedCount = document.querySelectorAll('.org-checkbox:checked').length;
-            checklistLabel.textContent = checkedCount > 0 ? `${checkedCount} Organisation(s) Selected` : 'Select Organisations...';
-        }
-
-        orgCheckboxes.forEach(cb => {
-            cb.addEventListener('change', () => {
-                updateChecklistSummary();
-                checkFormChanged();
-            });
-        });
-
-        function getCurrentState() {
-            const checkedOrgs = Array.from(document.querySelectorAll('.org-checkbox:checked')).map(cb => cb.value).sort();
-            return {
-                name: panelName.value,
-                class: panelClass.value,
-                cid: panelCid.value,
-                email: panelEmail.value,
-                password: panelPassword.value,
-                role: panelRole.value,
-                orgs: checkedOrgs.join(',')
-            };
-        }
-
-        function checkFormChanged() {
-            const isChanged = JSON.stringify(getCurrentState()) !== JSON.stringify(initialData);
-            if (isChanged) {
-                btnModify.classList.add('is-active');
-                btnModify.disabled = false;
-            } else {
-                resetModifyButton();
-            }
-        }
-
-        function resetModifyButton() {
-            btnModify.classList.remove('is-active');
-            btnModify.disabled = true;
-        }
-
-        function resetFieldsToInitial() {
-            panelName.value = initialData.name;
-            panelClass.value = initialData.class;
-            panelCid.value = initialData.cid;
-            panelEmail.value = initialData.email;
-            panelPassword.value = initialData.password;
-            panelHashedPassword.value = '';
-            panelRole.value = initialData.role;
-
-            const roleVal = initialData.role.trim().toLowerCase();
-            if (roleVal === 'student') {
-                panelOrgLabel.textContent = 'Organisations Enrolled:';
-            } else {
-                panelOrgLabel.textContent = 'Organisations Managed:';
-            }
-
-            const initialOrgs = initialData.orgs ? initialData.orgs.split(',') : [];
-            orgCheckboxes.forEach(cb => {
-                cb.checked = initialOrgs.includes(cb.value);
-            });
-
-            updateChecklistSummary();
-            resetModifyButton();
-        }
-
-        [panelName, panelClass, panelCid, panelEmail, panelRole].forEach(input => {
-            input.addEventListener('input', checkFormChanged);
-        });
-
-        closePanelBtn.addEventListener('click', () => {
-            detailPanel.classList.remove('is-open');
-            checklistDropdown.classList.remove('visible');
-        });
-
-        btnExportPdf.addEventListener('click', () => {
-            const uid = panelUid.value;
-            const isAttendanceChecked = chkAttendance.checked;
-            const isParticipationChecked = chkParticipation.checked;
-            const isSatisfactoryChecked = chkSatisfactory.checked;
-
-            if (!isAttendanceChecked && !isParticipationChecked && !isSatisfactoryChecked) {
-                alert('Please select at least one report option to export.');
-                return;
-            }
-
-            const form = exportForm;
-            form.querySelectorAll('.dyn-hidden-org').forEach(el => el.remove());
-
-            const appendOrgInputs = (dropdownId, fieldName) => {
-                const cbs = document.querySelectorAll(`#${dropdownId} input[type="checkbox"]:checked`);
-                cbs.forEach(cb => {
-                    const inp = document.createElement('input');
-                    inp.type = 'hidden';
-                    inp.name = fieldName + '[]';
-                    inp.value = cb.value;
-                    inp.className = 'dyn-hidden-org';
-                    form.appendChild(inp);
+                    promises.push(fetch('', { method: 'POST', body: formData }).then(res => res.json()));
                 });
-            };
 
-            if (isAttendanceChecked) appendOrgInputs('attChecklistDropdown', 'opt_attendance_orgs');
-            if (isParticipationChecked) appendOrgInputs('partChecklistDropdown', 'opt_participation_orgs');
-            if (isSatisfactoryChecked) appendOrgInputs('satChecklistDropdown', 'opt_satisfactory_orgs');
-
-            showConfirmModal(
-                'Export PDF Report Confirmation',
-                `Are you sure you want to generate and export the selected report for student UID: ${uid}?`,
-                false,
-                () => {
-                    exportForm.submit();
-                }
-            );
+                Promise.all(promises).then(results => {
+                    for (let r of results) {
+                        if (!r.success) {
+                            alert('Error: ' + r.message);
+                            return;
+                        }
+                    }
+                    document.querySelectorAll('.existing-org-box').forEach(box => {
+                        const newOid = box.querySelector('.edit-oid').value.trim();
+                        const oname = box.querySelector('.edit-oname').value.trim();
+                        box.setAttribute('data-oid', newOid);
+                        box.querySelector('.org-title').textContent = newOid + ' - ' + oname;
+                        box.querySelector('.org-title').title = oname;
+                    });
+                    hasChanges = false;
+                    modifyBtn.className = 'control-box grey';
+                    alert('Organisations updated successfully!');
+                }).catch(err => {
+                    alert('Error updating organisations.');
+                });
+            }
         });
 
-        btnModify.addEventListener('click', () => {
-            if (btnModify.disabled) return;
-            const uid = panelUid.value;
+        document.addEventListener('click', function(e) {
+            if (e.target.classList.contains('delete-org-trigger')) {
+                const box = e.target.closest('.existing-org-box');
+                const oid = box.getAttribute('data-oid');
 
-            showConfirmModal(
-                'Modify User Confirmation',
-                `Are you sure you want to save modifications for user UID: ${uid}?`,
-                false,
-                async () => {
-                    const selectedOrgs = Array.from(document.querySelectorAll('.org-checkbox:checked')).map(cb => cb.value);
+                if (confirm('Are you sure you want to delete this organisation?')) {
+                    const formData = new FormData();
+                    formData.append('action', 'delete_org');
+                    formData.append('oid', oid);
 
-                    const payload = {
-                        uid: panelUid.value,
-                        name: panelName.value,
-                        class: panelClass.value,
-                        cid: panelCid.value,
-                        email: panelEmail.value,
-                        password: panelPassword.value,
-                        role: panelRole.value,
-                        orgs: selectedOrgs
+                    fetch('', { method: 'POST', body: oid ? formData : null })
+                    .then(res => res.json())
+                    .then(data => {
+                        if (data.success) {
+                            box.remove();
+                            updateBoxColorsOnScroll();
+                        } else {
+                            alert('Failed to delete: ' + data.message);
+                        }
+                    });
+                }
+            }
+
+            if (e.target.classList.contains('delete-photo-trigger')) {
+                const box = e.target.closest('.org-vertical-box');
+                const oid = box.getAttribute('data-oid');
+
+                if (confirm('Are you sure you want to delete this photo?')) {
+                    const formData = new FormData();
+                    formData.append('action', 'delete_image');
+                    formData.append('oid', oid);
+
+                    fetch('', { method: 'POST', body: formData })
+                    .then(res => res.json())
+                    .then(data => {
+                        if (data.success) {
+                            box.classList.remove('has-image');
+                            const wrapper = box.querySelector('.image-preview-wrapper');
+                            wrapper.style.display = 'none';
+                            wrapper.querySelector('.org-image-preview').src = '';
+                            const uploadBtn = box.querySelector('.btn-upload-file');
+                            if (uploadBtn) uploadBtn.textContent = 'Choose photo';
+                            if (oid === 'new_org') {
+                                newOrgCroppedBase64 = '';
+                            }
+                        } else {
+                            alert('Failed to delete photo: ' + data.message);
+                        }
+                    });
+                }
+            }
+        });
+
+        let newOrgCroppedBase64 = '';
+
+        const saveNewOrgBtn = document.getElementById('saveNewOrgBtn');
+        if (saveNewOrgBtn) {
+            saveNewOrgBtn.addEventListener('click', function() {
+                const oid = document.getElementById('newOrgId').value.trim();
+                const oname = document.getElementById('newOrgName').value.trim();
+                const tid = document.getElementById('newOrgTeacher').value.trim();
+
+                const members = [];
+                const monitors = [];
+                document.querySelectorAll('#newOrgBox .checklist-item').forEach(item => {
+                    const uid = item.getAttribute('data-uid');
+                    if (item.classList.contains('state-monitor')) {
+                        members.push(uid);
+                        monitors.push(uid);
+                    } else if (item.classList.contains('state-member')) {
+                        members.push(uid);
+                    }
+                });
+
+                if (!oid || !oname) {
+                    alert('Please enter both Organisation ID and Name.');
+                    return;
+                }
+
+                const formData = new FormData();
+                formData.append('action', 'create_org');
+                formData.append('oid', oid);
+                formData.append('oname', oname);
+                formData.append('tid', tid);
+                members.forEach(m => formData.append('members[]', m));
+                monitors.forEach(m => formData.append('monitors[]', m));
+
+                fetch('', { method: 'POST', body: formData })
+                .then(res => res.json())
+                .then(data => {
+                    if (data.success) {
+                        if (newOrgCroppedBase64) {
+                            const imgData = new FormData();
+                            imgData.append('action', 'save_image');
+                            imgData.append('oid', oid);
+                            imgData.append('image', newOrgCroppedBase64);
+                            return fetch('', { method: 'POST', body: imgData }).then(() => {
+                                window.location.href = window.location.pathname + '?editing=true&scroll=right';
+                            });
+                        } else {
+                            window.location.href = window.location.pathname + '?editing=true&scroll=right';
+                        }
+                    } else {
+                        alert('Failed to create organisation: ' + data.message);
+                    }
+                })
+                .catch(err => { console.error('Error:', err); });
+            });
+        }
+
+        const cropModal = document.getElementById('cropModal');
+        const cropViewport = document.getElementById('cropViewport');
+        const cropImage = document.getElementById('cropImage');
+        const zoomSlider = document.getElementById('zoomSlider');
+        const cancelCropBtn = document.getElementById('cancelCropBtn');
+        const confirmCropBtn = document.getElementById('confirmCropBtn');
+
+        let activeBox = null;
+        let imgX = 0, imgY = 0, scale = 1;
+        let isDragging = false;
+        let startX = 0, startY = 0;
+
+        document.querySelectorAll('.org-vertical-box').forEach(box => {
+            const fileInput = box.querySelector('.device-file-input');
+            if (!fileInput) return;
+
+            fileInput.addEventListener('change', function(e) {
+                const file = e.target.files[0];
+                if (!file) return;
+
+                const reader = new FileReader();
+                reader.onload = function(event) {
+                    cropImage.onload = function() {
+                        activeBox = box;
+                        initCropper();
+                        cropModal.classList.add('active');
                     };
-
-                    try {
-                        const response = await fetch(window.location.href, {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify(payload)
-                        });
-
-                        const result = await response.json();
-
-                        if (result.success) {
-                            alert(`User ${uid} updated successfully.`);
-                            location.reload();
-                        } else {
-                            alert('Failed to update database: ' + result.message);
-                        }
-                    } catch (err) {
-                        console.error('Save failed:', err);
-                        alert('An error occurred while saving user details.');
-                    }
-                },
-                () => {
-                    resetFieldsToInitial();
-                }
-            );
+                    cropImage.src = event.target.result;
+                };
+                reader.readAsDataURL(file);
+                fileInput.value = '';
+            });
         });
 
-        btnDeleteUser.addEventListener('click', () => {
-            const uid = panelUid.value;
-            showConfirmModal(
-                'Delete User Confirmation',
-                `Are you sure you want to PERMANENTLY delete user UID: ${uid}?`,
-                true,
-                async () => {
-                    try {
-                        const response = await fetch(window.location.href, {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ action: 'delete', uid: uid })
-                        });
-                        const result = await response.json();
-                        if (result.success) {
-                            alert('User deleted successfully.');
-                            location.reload();
-                        } else {
-                            alert('Failed to delete user: ' + result.message);
-                        }
-                    } catch (err) {
-                        console.error('Delete failed:', err);
-                        alert('An error occurred while deleting the user.');
-                    }
-                }
-            );
-        });
-
-        function getTotalQty() {
-            const tens = parseInt(tensInput.value) || 0;
-            const units = parseInt(unitsInput.value) || 0;
-            return (tens * 10) + units;
-        }
-
-        function setTotalQty(val) {
-            if (val < 0) val = 0;
-            if (val > 99) val = 99;
-            const tens = Math.floor(val / 10);
-            const units = val % 10;
-            tensInput.value = tens;
-            unitsInput.value = units;
-            renderAddRows(val);
-        }
-
-        btnAddUserOpen.addEventListener('click', () => {
-            tensInput.value = '0';
-            unitsInput.value = '0';
-            addRowsContainer.innerHTML = '';
-            document.getElementById('btnAddSave').style.display = 'none';
-            addUserModal.classList.add('is-visible');
-        });
-
-        btnAddCancel.addEventListener('click', () => {
-            addUserModal.classList.remove('is-visible');
-        });
-
-        function renderAddRows(qty) {
-            addRowsContainer.innerHTML = '';
-            const btnAddSave = document.getElementById('btnAddSave');
-            if (qty <= 0) {
-                btnAddSave.style.display = 'none';
-                return;
+        function initCropper() {
+            scale = 1;
+            zoomSlider.value = 1;
+            const vSize = 260;
+            
+            if (cropImage.naturalWidth > cropImage.naturalHeight) {
+                cropImage.style.height = vSize + 'px';
+                cropImage.style.width = 'auto';
+            } else {
+                cropImage.style.width = vSize + 'px';
+                cropImage.style.height = 'auto';
             }
-            btnAddSave.style.display = 'block';
-
-            for (let i = 0; i < qty; i++) {
-                const rowDiv = document.createElement('div');
-                rowDiv.className = 'add-row-item';
-                rowDiv.innerHTML = `
-                    <input type="text" placeholder="UID" class="new-uid" required>
-                    <input type="text" placeholder="Name" class="new-name" required>
-                    <input type="text" placeholder="Class" class="new-class">
-                    <input type="text" placeholder="CID" class="new-cid">
-                    <div class="email-group">
-                        <input type="text" placeholder="username" class="new-email-prefix">
-                        <span class="email-suffix">@ecams.local</span>
-                    </div>
-                    <input type="password" placeholder="Password" class="new-password">
-                    <select class="new-role">
-                        <option value="student" selected>student</option>
-                        <option value="teacher">teacher</option>
-                        <option value="admin">admin</option>
-                    </select>
-                `;
-                addRowsContainer.appendChild(rowDiv);
-            }
+            
+            setTimeout(() => {
+                imgX = (vSize - cropImage.offsetWidth) / 2;
+                imgY = (vSize - cropImage.offsetHeight) / 2;
+                updateImageTransform();
+            }, 50);
         }
 
-        function bindPressAndHold(btn, delta) {
-            let timer = null;
-            let interval = null;
-
-            const triggerChange = () => {
-                setTotalQty(getTotalQty() + delta);
-            };
-
-            const startHolding = (e) => {
-                e.preventDefault();
-                triggerChange();
-                timer = setTimeout(() => {
-                    interval = setInterval(triggerChange, 200);
-                }, 400);
-            };
-
-            const stopHolding = () => {
-                clearTimeout(timer);
-                clearInterval(interval);
-            };
-
-            btn.addEventListener('mousedown', startHolding);
-            btn.addEventListener('touchstart', startHolding);
-
-            window.addEventListener('mouseup', stopHolding);
-            window.addEventListener('touchend', stopHolding);
+        function updateImageTransform() {
+            cropImage.style.transform = 'translate(' + imgX + 'px, ' + imgY + 'px) scale(' + scale + ')';
         }
 
-        bindPressAndHold(unitsUp, 1);
-        bindPressAndHold(unitsDown, -1);
-        bindPressAndHold(tensUp, 10);
-        bindPressAndHold(tensDown, -10);
+        cropViewport.addEventListener('mousedown', (e) => {
+            isDragging = true;
+            startX = e.clientX - imgX;
+            startY = e.clientY - imgY;
+        });
 
-        document.addEventListener('click', async (e) => {
-            if (e.target && e.target.id === 'btnAddSave') {
-                const rowItems = addRowsContainer.querySelectorAll('.add-row-item');
-                const usersPayload = [];
-                const combinationTracker = new Set();
+        window.addEventListener('mousemove', (e) => {
+            if (!isDragging) return;
+            imgX = e.clientX - startX;
+            imgY = e.clientY - startY;
+            updateImageTransform();
+        });
 
-                for (let item of rowItems) {
-                    const uid = item.querySelector('.new-uid').value.trim();
-                    const name = item.querySelector('.new-name').value.trim();
-                    const cls = item.querySelector('.new-class').value.trim();
-                    const cid = item.querySelector('.new-cid').value.trim();
-                    
-                    const emailPrefix = item.querySelector('.new-email-prefix').value.trim();
-                    const email = emailPrefix ? emailPrefix + '@ecams.local' : '';
+        window.addEventListener('mouseup', () => { isDragging = false; });
 
-                    const password = item.querySelector('.new-password').value.trim();
-                    const role = item.querySelector('.new-role').value;
+        zoomSlider.addEventListener('input', (e) => {
+            scale = parseFloat(e.target.value);
+            updateImageTransform();
+        });
 
-                    if (!uid || !name) {
-                        alert('Every user row must have at least a UID and Name.');
-                        return;
-                    }
+        cancelCropBtn.addEventListener('click', () => {
+            cropModal.classList.remove('active');
+            activeBox = null;
+        });
 
-                    if (cls && cid) {
-                        const comboKey = `${cls}_${cid}`.toLowerCase();
-                        
-                        if (combinationTracker.has(comboKey)) {
-                            alert(`Duplicate constraint violation: Class "${cls}" cannot have multiple users with CID "${cid}" in this batch.`);
-                            return;
-                        }
-                        combinationTracker.add(comboKey);
+        confirmCropBtn.addEventListener('click', () => {
+            if (!activeBox) return;
 
-                        const existsInDb = existingUsers.some(u => 
-                            (u.class ? String(u.class).trim().toLowerCase() : '') === cls.toLowerCase() && 
-                            (u.cid ? String(u.cid).trim().toLowerCase() : '') === cid.toLowerCase()
-                        );
-                        if (existsInDb) {
-                            alert(`Duplicate constraint violation: Class "${cls}" already has a user with CID "${cid}" in the database.`);
-                            return;
-                        }
-                    }
+            const preview = activeBox.querySelector('.org-image-preview');
+            const wrapper = activeBox.querySelector('.image-preview-wrapper');
+            const uploadBtn = activeBox.querySelector('.btn-upload-file');
+            const oid = activeBox.getAttribute('data-oid');
 
-                    usersPayload.push({ uid, name, class: cls, cid, email, password, role });
-                }
+            const canvas = document.createElement('canvas');
+            const outputSize = 300;
+            canvas.width = outputSize;
+            canvas.height = outputSize;
+            const ctx = canvas.getContext('2d');
 
-                try {
-                    const response = await fetch(window.location.href, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ action: 'batch_add', users: usersPayload })
-                    });
-                    const result = await response.json();
-                    if (result.success) {
-                        alert('New users added successfully.');
-                        location.reload();
+            const vSize = 260;
+            const imgRect = cropImage.getBoundingClientRect();
+            const viewportRect = cropViewport.getBoundingClientRect();
+
+            const naturalScale = cropImage.naturalWidth / imgRect.width;
+
+            const sourceX = (viewportRect.left - imgRect.left) * naturalScale;
+            const sourceY = (viewportRect.top - imgRect.top) * naturalScale;
+            const sourceSize = vSize * naturalScale;
+
+            ctx.fillStyle = '#ffffff';
+            ctx.fillRect(0, 0, outputSize, outputSize);
+
+            ctx.drawImage(
+                cropImage,
+                sourceX,
+                sourceY,
+                sourceSize,
+                sourceSize,
+                0, 0, outputSize, outputSize
+            );
+
+            const base64Image = canvas.toDataURL('image/png', 0.9);
+            
+            if (oid === 'new_org') {
+                newOrgCroppedBase64 = base64Image;
+                preview.src = base64Image;
+                wrapper.style.display = 'block';
+                activeBox.classList.add('has-image');
+                uploadBtn.textContent = 'Change photo';
+            } else {
+                const formData = new FormData();
+                formData.append('action', 'save_image');
+                formData.append('oid', oid);
+                formData.append('image', base64Image);
+
+                fetch('', { method: 'POST', body: formData })
+                .then(res => res.json())
+                .then(data => {
+                    if (data.success) {
+                        preview.src = data.path + '?t=' + new Date().getTime();
+                        wrapper.style.display = 'block';
+                        activeBox.classList.add('has-image');
+                        uploadBtn.textContent = 'Change photo';
                     } else {
-                        alert('Failed to add users: ' + result.message);
+                        alert('Error saving image: ' + data.message);
                     }
-                } catch (err) {
-                    console.error('Batch add failed:', err);
-                    alert('An error occurred while adding users.');
-                }
+                })
+                .catch(err => { console.error('Upload failed:', err); });
             }
+
+            cropModal.classList.remove('active');
+            activeBox = null;
         });
     </script>
 </body>
