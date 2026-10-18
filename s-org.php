@@ -1,70 +1,67 @@
 <?php
-session_start();
 
 require_once 'db.php';
+session_start();
+
+
 if (!isset($_SESSION['role']) || strtolower($_SESSION['role']) !== 'student') {
-    // Redirect unauthorized users to an error page or their respective dashboard
     header('Location: unauthorized.php');
     exit();
 }
+
 if (!isset($_SESSION['uid']) && !isset($_SESSION['user_id'])) {
-    header('Location: login.php');
-    exit();
-}
-if (!isset($_SESSION['uid']) || $_SESSION['role'] !== 'student') {
-    header("Location: login.php");
+    header('Location: shit.php');
     exit();
 }
 
-$studentUid = $_SESSION['uid'];
-
-try {
-    $pdo = new PDO("mysql:host=$host;dbname=$dbname;charset=utf8mb4", $username, $password, [
-        PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-        PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC
-    ]);
-} catch (PDOException $e) {
-    die("Database Connection Failed: " . $e->getMessage());
-}
+$studentUid = $_SESSION['uid'] ?? $_SESSION['user_id'] ?? $_SESSION['id'] ?? 2;
 
 $orgsData = [];
-try {
-    // Fetch organizations where the logged-in student is a member
-    $orgStmt = $pdo->prepare("
-        SELECT o.oid, o.oname, o.tid, 
-               (SELECT uid FROM membership WHERE oid = o.oid LIMIT 1) AS monitor_uid, 
-               u.name AS teacher_name
-        FROM membership m
-        JOIN organisations o ON m.oid = o.oid
-        LEFT JOIN users u ON o.tid = u.uid
-        WHERE m.sid = ?
-        ORDER BY o.oid ASC
-    ");
-    $orgStmt->execute([$studentUid]);
-    $orgsRaw = $orgStmt->fetchAll();
-
-    foreach ($orgsRaw as $org) {
-        $monitorUid = $org['monitor_uid'] ?? '';
-
-        // Fetch members and place monitor/top user first
-        $memStmt = $pdo->prepare("
-            SELECT u.uid, u.name 
+if (isset($conn) && $conn instanceof mysqli) {
+    try {
+        // Fetch organizations where the logged-in student is a member, along with the designated monitor
+        $orgStmt = $conn->prepare("
+            SELECT o.oid, o.oname, o.tid, 
+                   (SELECT mid FROM monitor WHERE oid = o.oid LIMIT 1) AS monitor_uid, 
+                   u.name AS teacher_name
             FROM membership m
-            JOIN users u ON m.sid = u.uid
-            WHERE m.oid = ?
-            ORDER BY CASE WHEN u.uid = ? THEN 0 ELSE 1 END, CAST(u.uid AS UNSIGNED) ASC, u.uid ASC
+            JOIN organisations o ON m.oid = o.oid
+            LEFT JOIN users u ON o.tid = u.uid
+            WHERE m.sid = ?
+            ORDER BY o.oid ASC
         ");
-        $memStmt->execute([$org['oid'], $monitorUid]);
-        $org['members'] = $memStmt->fetchAll();
+        $orgStmt->bind_param("s", $studentUid);
+        $orgStmt->execute();
+        $orgRes = $orgStmt->get_result();
+        $orgsRaw = $orgRes->fetch_all(MYSQLI_ASSOC);
+        $orgStmt->close();
 
-        $safeOid = preg_replace('/[^a-zA-Z0-9_-]/', '_', $org['oid']);
-        $existingImg = "uploads/org_{$safeOid}.png";
-        $org['image_path'] = file_exists($existingImg) ? $existingImg : '';
-        
-        $orgsData[] = $org;
+        foreach ($orgsRaw as $org) {
+            $monitorUid = $org['monitor_uid'] ?? '';
+
+            // Fetch members and place the monitor at the top
+            $memStmt = $conn->prepare("
+                SELECT u.uid, u.name 
+                FROM membership m
+                JOIN users u ON m.sid = u.uid
+                WHERE m.oid = ?
+                ORDER BY CASE WHEN u.uid = ? THEN 0 ELSE 1 END, CAST(u.uid AS UNSIGNED) ASC, u.uid ASC
+            ");
+            $memStmt->bind_param("ss", $org['oid'], $monitorUid);
+            $memStmt->execute();
+            $memRes = $memStmt->get_result();
+            $org['members'] = $memRes->fetch_all(MYSQLI_ASSOC);
+            $memStmt->close();
+
+            $safeOid = preg_replace('/[^a-zA-Z0-9_-]/', '_', $org['oid']);
+            $existingImg = "uploads/org_{$safeOid}.png";
+            $org['image_path'] = file_exists($existingImg) ? $existingImg : '';
+            
+            $orgsData[] = $org;
+        }
+    } catch (Exception $e) {
+        $orgsData = [];
     }
-} catch (PDOException $e) {
-    $orgsData = [];
 }
 ?>
 <!DOCTYPE html>
@@ -157,8 +154,7 @@ try {
         .members-table th { position: sticky; top: 0; background-color: #f1f5f9; font-size: 0.72rem; font-weight: 700; color: #475569; padding: 4px 8px; border-bottom: 1px solid #cbd5e1; z-index: 5; }
         .members-table td { padding: 4px 8px; font-size: 0.85rem; color: #1e293b; border-bottom: 1px solid #f1f5f9; }
         
-        /* Monitor styling matching a-org.php */
-        .monitor-row td { font-weight: bold; color: #0f172a }
+        .monitor-row td { font-weight: bold; color: #0f172a; }
     </style>
 </head>
 <body>
@@ -228,8 +224,8 @@ try {
                                             </tr>
                                         </thead>
                                         <tbody>
-                                            <?php foreach ($org['members'] as $index => $member): 
-                                                $isMonitor = ($index === 0); // Top member treated as monitor if matched, or adjust condition as needed
+                                            <?php foreach ($org['members'] as $member): 
+                                                $isMonitor = ($member['uid'] == $monitorUid);
                                             ?>
                                                 <tr class="<?= $isMonitor ? 'monitor-row' : '' ?>">
                                                     <td><?= htmlspecialchars($member['uid']) ?></td>
