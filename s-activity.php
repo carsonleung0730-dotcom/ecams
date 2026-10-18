@@ -9,7 +9,7 @@ if (!isset($_SESSION['role']) \vert{}\vert{} strtolower($_SESSION['role']) !== '
     exit();
 }
 if (!isset($_SESSION['uid']) && !isset($_SESSION['user_id'])) {
-    header('Location: shit.php');
+    header('Location: login.php');
     exit();
 }
 
@@ -33,23 +33,20 @@ if (!empty($_SESSION['uid'])) {
 
 // Fetch complete user details including ismonitor using MySQLi[cite: 9]
 $userInfo = [];
-try {
-    if (isset($conn) &&$conn instanceof mysqli) {
-        if (is_numeric($loggedInIdentifier)) {
-            $stmt =$conn->prepare("SELECT uid, name, email, role, class, cid, ismonitor FROM users WHERE uid = ?");
-            $stmt->bind_param("s", $loggedInIdentifier);
-        } else {
-            $stmt =$conn->prepare("SELECT uid, name, email, role, class, cid, ismonitor FROM users WHERE name = ? OR email = ?");
-            $stmt->bind_param("ss", $loggedInIdentifier,$loggedInIdentifier);
-        }
-        $stmt->execute();
-        $result =$stmt->get_result();
-        if ($row =$result->fetch_assoc()) {
-            $userInfo =$row;
-        }
-        $stmt->close();
+if (isset($conn) &&$conn instanceof mysqli) {
+    if (is_numeric($loggedInIdentifier)) {
+        $stmt =$conn->prepare("SELECT uid, name, email, role, class, cid, ismonitor FROM users WHERE uid = ?");
+        $stmt->bind_param("s", $loggedInIdentifier);
+    } else {
+        $stmt =$conn->prepare("SELECT uid, name, email, role, class, cid, ismonitor FROM users WHERE name = ? OR email = ?");
+        $stmt->bind_param("ss", $loggedInIdentifier,$loggedInIdentifier);
     }
-} catch (Exception $e) {$userInfo = [];
+    $stmt->execute();
+    $result =$stmt->get_result();
+    if ($row =$result->fetch_assoc()) {
+        $userInfo =$row;
+    }
+    $stmt->close();
 }
 
 $isMonitor = (!empty($userInfo['ismonitor']) &&$userInfo['ismonitor'] == 1);
