@@ -1,7 +1,9 @@
 <?php
+// Database configuration and session parameters loaded FIRST to avoid warnings
+require_once 'db.php';   
+
 session_start();
 
-$require_once 'db.php';
 if (!isset($_SESSION['role']) || strtolower($_SESSION['role']) !== 'teacher') {
     // Redirect unauthorized users to an error page or their respective dashboard
     header('Location: unauthorized.php');
@@ -11,26 +13,21 @@ if (!isset($_SESSION['uid']) && !isset($_SESSION['user_id'])) {
     header('Location: login.php');
     exit();
 }
-try {
-    $pdo = new PDO("mysql:host=$host;dbname=$dbname;charset=utf8mb4", $username, $password, [
-        PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-        PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC
-    ]);
-} catch (PDOException $e) {
-    die("Database Connection Failed: " . $e->getMessage());
-}
 
 $teacherUid = $_SESSION['uid'] ?? $_SESSION['user_id'] ?? $_SESSION['id'] ?? 1;
 
 // Fetch organisations managed by this teacher for report option filters
 $managedOrgIds = [];
 $managedOrgsList = [];
-try {
-    $mOrgStmt = $pdo->prepare("SELECT oid, oname FROM organisations WHERE tid = ? ORDER BY oname ASC");
-    $mOrgStmt->execute([$teacherUid]);
-    $managedOrgsList = $mOrgStmt->fetchAll();
-    $managedOrgIds = array_column($managedOrgsList, 'oid');
-} catch (PDOException $e) {}
+$mOrgStmt = $conn->prepare("SELECT oid, oname FROM organisations WHERE tid = ? ORDER BY oname ASC");
+$mOrgStmt->bind_param("s", $teacherUid);
+$mOrgStmt->execute();
+$mOrgRes = $mOrgStmt->get_result();
+while ($row = $mOrgRes->fetch_assoc()) {
+    $managedOrgsList[] = $row;
+    $managedOrgIds[] = $row['oid'];
+}
+$mOrgStmt->close();
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (isset($_POST['action']) && $_POST['action'] === 'export_pdf') {
@@ -47,51 +44,67 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $sat      = isset($_POST['opt_satisfactory']) ? true : false;
         $satOrgs  = $_POST['opt_satisfactory_orgs'] ?? [];
 
-        $chkTeachOrg = $pdo->prepare("
+        $chkTeachOrg = $conn->prepare("
             SELECT COUNT(*) FROM membership m 
             JOIN organisations o ON m.oid = o.oid 
-            WHERE m.sid = :uid AND o.tid = :tid
+            WHERE m.sid = ? AND o.tid = ?
         ");
-        $chkTeachOrg->execute([':uid' => $uid, ':tid' => $teacherUid]);
-        if ($chkTeachOrg->fetchColumn() == 0) {
+        $chkTeachOrg->bind_param("ss", $uid, $teacherUid);
+        $chkTeachOrg->execute();
+        $chkTeachOrg->bind_result($teachOrgCount);
+        $chkTeachOrg->fetch();
+        $chkTeachOrg->close();
+
+        if ($teachOrgCount == 0) {
             die("Unauthorized: You can only export reports for students in your managed organisations.");
         }
 
-        $stmt = $pdo->prepare("SELECT * FROM users WHERE uid = :uid AND LOWER(role) = 'student'");
-        $stmt->execute([':uid' => $uid]);
-        $student = $stmt->fetch();
+        $stmt = $conn->prepare("SELECT * FROM users WHERE uid = ? AND LOWER(role) = 'student'");
+        $stmt->bind_param("s", $uid);
+        $stmt->execute();
+        $studentRes = $stmt->get_result();
+        $student = $studentRes->fetch_assoc();
+        $stmt->close();
 
         if (!$student) {
             die("Error: PDF report generation is strictly restricted to users with the 'student' role.");
         }
 
-        $orgStmt = $pdo->prepare("
+        $orgStmt = $conn->prepare("
             SELECT o.oid, o.oname 
             FROM membership m 
             JOIN organisations o ON m.oid = o.oid 
-            WHERE m.sid = :uid
+            WHERE m.sid = ?
         ");
-        $orgStmt->execute([':uid' => $uid]);
-        $enrolledOrgsRaw = $orgStmt->fetchAll();
+        $orgStmt->bind_param("s", $uid);
+        $orgStmt->execute();
+        $enrolledOrgsRes = $orgStmt->get_result();
+        $enrolledOrgsRaw = $enrolledOrgsRes->fetch_all(MYSQLI_ASSOC);
+        $orgStmt->close();
+
         $orgMap = [];
         foreach ($enrolledOrgsRaw as $o) {
             $orgMap[$o['oid']] = $o['oname'];
         }
         $allOrgIds = array_keys($orgMap);
 
-        $getOrgActivities = function($oid) use ($pdo, $start, $end) {
+        $getOrgActivities = function($oid) use ($conn, $start, $end) {
             $actQuery = "
                 SELECT a.aid, a.oid, a.aname, a.date, a.room 
                 FROM activity a 
                 WHERE a.oid = ? AND a.date BETWEEN ? AND ?
                 ORDER BY a.date ASC
             ";
-            $actStmt = $pdo->prepare($actQuery);
-            $actStmt->execute([$oid, $start, $end]);
-            return $actStmt->fetchAll();
+            $actStmt = $conn->prepare($actQuery);
+            $actStmt->bind_param("sss", $oid, $start, $end);
+            $actStmt->execute();
+            $res = $actStmt->get_result();
+            $data = $res->fetch_all(MYSQLI_ASSOC);
+            $actStmt->close();
+            return $data;
         };
 
-        $getAllActivities = function($targetOids) use ($pdo, $start, $end) {
+        $getAllActivities = function($targetOids) use ($conn, $start, $end) {
             if (empty($targetOids)) return [];
             $placeholders = implode(',', array_fill(0, count($targetOids), '?'));
             $actQuery = "
@@ -100,10 +113,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 WHERE a.oid IN ($placeholders) AND a.date BETWEEN ? AND ?
                 ORDER BY a.date ASC
             ";
+            $types = str_repeat('s', count($targetOids)) . 'ss';
             $params = array_merge($targetOids, [$start, $end]);
-            $actStmt = $pdo->prepare($actQuery);
-            $actStmt->execute($params);
-            return $actStmt->fetchAll();
+            
+            $actStmt = $conn->prepare($actQuery);
+            $actStmt->bind_param($types, ...$params);
+            $actStmt->execute();
+            $res = $actStmt->get_result();
+            $data = $res->fetch_all(MYSQLI_ASSOC);
+            $actStmt->close();
+            return $data;
         };
 
         $toRoman = function($num) {
@@ -116,15 +135,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         $attendanceMap = [];
         if (!empty($allOrgIds)) {
-            $attStmt = $pdo->prepare("
+            $attStmt = $conn->prepare("
                 SELECT aid, attend, rate, `s.rate` 
                 FROM attendance 
-                WHERE sid = :uid
+                WHERE sid = ?
             ");
-            $attStmt->execute([':uid' => $uid]);
-            while ($row = $attStmt->fetch()) {
+            $attStmt->bind_param("s", $uid);
+            $attStmt->execute();
+            $attRes = $attStmt->get_result();
+            while ($row = $attRes->fetch_assoc()) {
                 $attendanceMap[$row['aid']] = $row;
             }
+            $attStmt->close();
         }
 
         header('Content-Type: application/pdf');
@@ -417,39 +439,41 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 }
 
 $classes = [];
-try {
-    $classStmt = $pdo->query("SELECT DISTINCT class FROM users WHERE class IS NOT NULL AND class != '' ORDER BY class ASC");
-    $classes = $classStmt->fetchAll(PDO::FETCH_COLUMN);
-} catch (PDOException $e) {}
+$classRes = $conn->query("SELECT DISTINCT class FROM users WHERE class IS NOT NULL AND class != '' ORDER BY class ASC");
+if ($classRes) {
+    while ($row = $classRes->fetch_assoc()) {
+        $classes[] = $row['class'];
+    }
+}
 
 $users = [];
-try {
-    $query = "
-        SELECT 
-            u.uid, 
-            u.name, 
-            u.class, 
-            u.cid,
-            u.email,
-            u.role,
-            CASE 
-                WHEN LOWER(u.role) = 'student' THEN (
-                    SELECT GROUP_CONCAT(CONCAT(o.oid, ':', o.oname) SEPARATOR '||')
-                    FROM membership m
-                    JOIN organisations o ON m.oid = o.oid
-                    WHERE m.sid = u.uid
-                )
-                ELSE (
-                    SELECT GROUP_CONCAT(CONCAT(o.oid, ':', o.oname) SEPARATOR '||')
-                    FROM organisations o
-                    WHERE o.tid = u.uid
-                )
-            END AS org_data
-        FROM users u
-        ORDER BY u.uid ASC
-    ";
-    $stmt = $pdo->query($query);
-    $rawUsers = $stmt->fetchAll();
+$query = "
+    SELECT 
+        u.uid, 
+        u.name, 
+        u.class, 
+        u.cid,
+        u.email,
+        u.role,
+        CASE 
+            WHEN LOWER(u.role) = 'student' THEN (
+                SELECT GROUP_CONCAT(CONCAT(o.oid, ':', o.oname) SEPARATOR '||')
+                FROM membership m
+                JOIN organisations o ON m.oid = o.oid
+                WHERE m.sid = u.uid
+            )
+            ELSE (
+                SELECT GROUP_CONCAT(CONCAT(o.oid, ':', o.oname) SEPARATOR '||')
+                FROM organisations o
+                WHERE o.tid = u.uid
+            )
+        END AS org_data
+    FROM users u
+    ORDER BY u.uid ASC
+";
+$userRes = $conn->query($query);
+if ($userRes) {
+    $rawUsers = $userRes->fetch_all(MYSQLI_ASSOC);
 
     foreach ($rawUsers as $row) {
         $orgList = [];
@@ -478,7 +502,7 @@ try {
         unset($row['org_data']);
         $users[] = $row;
     }
-} catch (PDOException $e) {}
+}
 ?>
 <!DOCTYPE html>
 <html lang="en">
