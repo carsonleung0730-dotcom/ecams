@@ -9,7 +9,7 @@ if (!isset($_SESSION['role']) || strtolower($_SESSION['role']) !== 'admin') {
     exit();
 }
 if (!isset($_SESSION['uid']) && !isset($_SESSION['user_id'])) {
-    header('Location: login.php');
+    header('Location: shit.php');
     exit();
 }
 
