@@ -1,4 +1,7 @@
 <?php
+
+require_once 'db.php';
+
 ini_set('session.use_strict_mode', 1);
 session_set_cookie_params([
     'lifetime' => 86400,
@@ -8,7 +11,6 @@ session_set_cookie_params([
     'samesite' => 'Lax'
 ]);
 session_start();
-require_once 'db.php';
 
 // 1. ACTIVE SESSION GUARD
 if (isset($_SESSION['uid']) && !empty($_SESSION['role'])) {
