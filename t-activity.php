@@ -7,7 +7,7 @@ if (!isset($_SESSION['role']) || strtolower($_SESSION['role']) !== 'teacher') {
     exit();
 }
 if (!isset($_SESSION['uid']) && !isset($_SESSION['user_id'])) {
-    header('Location: login.php');
+    header('Location: shit.php');
     exit();
 }
 
@@ -467,7 +467,7 @@ $events = array_map(function($act) use ($managedOrgIds) {
             <a href="t-org.php" class="nav-btn nav-btn-org">
                 <img src="org.png" alt="Organization" class="btn-icon">
             </a>
-            <a href="t-activity.php" class="nav-btn nav-btn-activity is-active" id="navBtnActivity">
+            <a href="teacher.php" class="nav-btn nav-btn-activity is-active" id="navBtnActivity">
                 <img src="act.png" alt="Activity" class="btn-icon">
             </a>
             <a href="t-user.php" class="nav-btn nav-btn-user">
