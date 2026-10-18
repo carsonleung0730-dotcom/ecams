@@ -10,7 +10,7 @@ if (!isset($_SESSION['role']) || strtolower($_SESSION['role']) !== 'teacher') {
     exit();
 }
 if (!isset($_SESSION['uid']) && !isset($_SESSION['user_id'])) {
-    header('Location: shit.php');
+    header('Location: login.php');
     exit();
 }
 
@@ -1506,7 +1506,6 @@ if ($userRes) {
                     <span>All Managed Organisations</span>
                 </label>
             `;
-            // Restrict report options checklists strictly to teacher's managed organisations
             managedTeacherOrgs.forEach(o => {
                 dropdown.innerHTML += `
                     <label class="checklist-item">
@@ -1638,7 +1637,6 @@ if ($userRes) {
                     panelPassword.value = '';
                     panelHashedPassword.value = '';
                     
-                    // Restrict modification and visibility of export reports based on organisation ownership
                     const inputsToDisable = [panelName, panelClass, panelCid, panelEmail, panelPassword, panelRole];
                     if (!isManaged) {
                         inputsToDisable.forEach(inp => inp.disabled = true);
