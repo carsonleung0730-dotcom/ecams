@@ -1,4 +1,5 @@
 <?php
+require_once 'db.php';  
 ini_set('session.use_strict_mode', 1);
 session_set_cookie_params([
     'lifetime' => 86400,
@@ -10,7 +11,7 @@ session_set_cookie_params([
 session_start();
 
 // Include database connection (uses $conn via MySQLi)
-require_once 'db.php';  
+
 
 // Enforce role-based access control
 if (!isset($_SESSION['role']) || strtolower(trim($_SESSION['role'])) !== 'admin') {
