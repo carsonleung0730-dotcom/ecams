@@ -602,7 +602,7 @@ $events = array_map(function($act) use ($managedOrgIds) {
             navBtnActivity.addEventListener('click', function(e) {
                 e.preventDefault();
                 closeRightPanel();
-                window.location.href = 't-activity.php';
+                window.location.href = 'teacher.php';
             });
 
             function resetPanelPosition() {
@@ -1023,7 +1023,7 @@ $events = array_map(function($act) use ($managedOrgIds) {
                     formData.append('timeslot', document.getElementById('field_timeslot').value);
                 }
 
-                fetch('t-activity.php', {
+                fetch('teacher.php', {
                     method: 'POST',
                     body: formData
                 })
