@@ -1,5 +1,7 @@
 <?php
-require_once 'db.php';
+// Database configuration and session parameters loaded FIRST to avoid warnings
+require_once 'db.php';   
+
 session_start();
 
 if (!isset($_SESSION['role']) \vert{}\vert{} strtolower($_SESSION['role']) !== 'student') {
@@ -13,7 +15,7 @@ if (!isset($_SESSION['uid']) && !isset($_SESSION['user_id'])) {
 
 $studentUid =$_SESSION['uid'] ?? $_SESSION['user_id'] ?? $_SESSION['id'] ?? 2;
 
-// Fetch organizations where the logged-in student is a member
+// Fetch organizations where the logged-in student is a member using MySQLi
 $managedOrgIds = [];$managedOrgsList = [];
 if (isset($conn) &&$conn instanceof mysqli) {
     $mOrgStmt =$conn->prepare("
@@ -23,19 +25,21 @@ if (isset($conn) &&$conn instanceof mysqli) {
         WHERE m.sid = ? 
         ORDER BY o.oname ASC
     ");
-    $mOrgStmt->bind_param("s", $studentUid);$mOrgStmt->execute();
-    $mOrgRes =$mOrgStmt->get_result();
-    while ($row =$mOrgRes->fetch_assoc()) {
-        $managedOrgsList[] =$row;
-        $managedOrgIds[] =$row['oid'];
+    if ($mOrgStmt) {$mOrgStmt->bind_param("s", $studentUid);$mOrgStmt->execute();
+        $mOrgRes =$mOrgStmt->get_result();
+        while ($row =$mOrgRes->fetch_assoc()) {
+            $managedOrgsList[] =$row;
+            $managedOrgIds[] =$row['oid'];
+        }
+        $mOrgStmt->close();
     }
-    $mOrgStmt->close();
 }
 
 // Fetch activities ONLY for the organizations this student belongs to
 $dbActivities = [];
 if (isset($conn) && $conn instanceof mysqli && !empty($managedOrgIds)) {
     $placeholders = implode(',', array_fill(0, count($managedOrgIds), '?'));
+    $types = str_repeat('s', count($managedOrgIds));
     
     $stmt =$conn->prepare("
         SELECT a.aid, a.oid, a.aname, a.date, a.room, a.timeslot, o.oname 
@@ -45,8 +49,7 @@ if (isset($conn) && $conn instanceof mysqli && !empty($managedOrgIds)) {
     ");
     
     if ($stmt) {
-        // Safely bind parameters by reference for MySQLi
-        $types = str_repeat('s', count($managedOrgIds));
+        // Safely bind dynamic parameters by reference for MySQLi
         $bind_params = [$types];
         foreach ($managedOrgIds as$key => $value) {$bind_params[] = &$managedOrgIds[$key];
         }
