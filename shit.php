@@ -33,11 +33,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     // Query database strictly by username using 1 positional placeholder
     // Query database strictly by username using MySQLi
 $stmt = $conn->prepare("SELECT * FROM users WHERE name = ? LIMIT 1");
+if (!$stmt) {
+    die("Database Prepare Failed: " . $conn->error);
+}
 $stmt->bind_param("s", $username);
 $stmt->execute();
 $result = $stmt->get_result();
 $user = $result->fetch_assoc();
-
     // Validate credentials
     if ($user && password_verify($password, $user['password'])) {
 
