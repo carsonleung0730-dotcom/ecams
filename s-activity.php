@@ -1,13 +1,17 @@
 <?php
-// Temporarily force error display
-ini_set('display_errors', 1);
-ini_set('display_startup_errors', 1);
-error_reporting(E_ALL);
-
-require_once 'db.php';
+require_once 'db.php';   
 session_start();
 
-// Test basic output to verify file execution
-echo "Database and session loaded successfully! If you see this, the file is working.";
+echo "<h3>Session Debugger:</h3>";
+echo "<pre>";
+print_r($_SESSION);
+echo "</pre>";
+
+echo "<h3>Database Connection Check:</h3>";
+if (isset($conn) && $conn instanceof mysqli) {
+    echo "MySQLi connection (\$conn) is active and working!";
+} else {
+    echo "ERROR: \$conn is not set or is not a valid MySQLi connection. Check your db.php file.";
+}
 exit();
 ?>
