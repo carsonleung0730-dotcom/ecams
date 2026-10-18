@@ -1,7 +1,4 @@
 <?php
-ini_set('display_errors', 1);
-ini_set('display_startup_errors', 1);
-error_reporting(E_ALL);
 require_once 'db.php';
 session_start();
 
@@ -39,7 +36,6 @@ if (isset($conn) &&$conn instanceof mysqli) {
 $dbActivities = [];
 if (isset($conn) && $conn instanceof mysqli && !empty($managedOrgIds)) {
     $placeholders = implode(',', array_fill(0, count($managedOrgIds), '?'));
-    $types = str_repeat('s', count($managedOrgIds));
     
     $stmt =$conn->prepare("
         SELECT a.aid, a.oid, a.aname, a.date, a.room, a.timeslot, o.oname 
@@ -47,8 +43,17 @@ if (isset($conn) && $conn instanceof mysqli && !empty($managedOrgIds)) {
         LEFT JOIN organisations o ON a.oid = o.oid 
         WHERE a.oid IN ($placeholders)
     ");
-    $stmt->bind_param($types, ...$managedOrgIds);
-    $stmt->execute();$res = $stmt->get_result();$dbActivities = $res->fetch_all(MYSQLI_ASSOC);$stmt->close();
+    
+    if ($stmt) {
+        // Safely bind parameters by reference for MySQLi
+        $types = str_repeat('s', count($managedOrgIds));
+        $bind_params = [$types];
+        foreach ($managedOrgIds as$key => $value) {$bind_params[] = &$managedOrgIds[$key];
+        }
+        call_user_func_array([$stmt, 'bind_param'],$bind_params);
+        
+        $stmt->execute();$res = $stmt->get_result();$dbActivities = $res->fetch_all(MYSQLI_ASSOC);$stmt->close();
+    }
 }
 
 $events = array_map(function($act) {
