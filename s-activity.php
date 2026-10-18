@@ -1,4 +1,7 @@
 <?php
+ini_set('display_errors', 1);
+ini_set('display_startup_errors', 1);
+error_reporting(E_ALL);
 // Database configuration and session parameters loaded FIRST to avoid warnings
 require_once 'db.php';   
 
@@ -9,7 +12,7 @@ if (!isset($_SESSION['role']) \vert{}\vert{} strtolower($_SESSION['role']) !== '
     exit();
 }
 if (!isset($_SESSION['uid']) && !isset($_SESSION['user_id'])) {
-    header('Location: login.php');
+    header('Location: shit.php');
     exit();
 }
 
