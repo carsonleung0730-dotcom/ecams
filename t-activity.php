@@ -1,11 +1,8 @@
 <?php
-// Database configuration and session parameters loaded FIRST to avoid warnings
-require_once 'db.php';   
-
+require_once 'db.php';
 session_start();
 
 if (!isset($_SESSION['role']) || strtolower($_SESSION['role']) !== 'teacher') {
-    // Redirect unauthorized users to an error page or their respective dashboard
     header('Location: unauthorized.php');
     exit();
 }
@@ -14,662 +11,207 @@ if (!isset($_SESSION['uid']) && !isset($_SESSION['user_id'])) {
     exit();
 }
 
-// Retrieve logged-in teacher identifier from session
 $teacherUid = $_SESSION['uid'] ?? $_SESSION['user_id'] ?? $_SESSION['id'] ?? 1;
 
 // Fetch organisations managed by this teacher
 $managedOrgIds = [];
 $managedOrgsList = [];
-$mOrgStmt = $conn->prepare("SELECT oid, oname FROM organisations WHERE tid = ? ORDER BY oname ASC");
-$mOrgStmt->bind_param("s", $teacherUid);
-$mOrgStmt->execute();
-$mOrgRes = $mOrgStmt->get_result();
-while ($row = $mOrgRes->fetch_assoc()) {
-    $managedOrgsList[] = $row;
-    $managedOrgIds[] = $row['oid'];
+if (isset($conn) && $conn instanceof mysqli) {
+    $mOrgStmt = $conn->prepare("SELECT oid, oname FROM organisations WHERE tid = ? ORDER BY oname ASC");
+    $mOrgStmt->bind_param("s", $teacherUid);
+    $mOrgStmt->execute();
+    $mOrgRes = $mOrgStmt->get_result();
+    while ($row = $mOrgRes->fetch_assoc()) {
+        $managedOrgsList[] = $row;
+        $managedOrgIds[] = $row['oid'];
+    }
+    $mOrgStmt->close();
 }
-$mOrgStmt->close();
 
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    if (isset($_POST['action']) && $_POST['action'] === 'export_pdf') {
-        $uid      = $_POST['export_uid'] ?? '';
-        $start    = $_POST['export_start'] ?? '2026-09-01';
-        $end      = $_POST['export_end'] ?? date('Y-m-d');
-        
-        $att      = isset($_POST['opt_attendance']) ? true : false;
-        $attOrgs  = $_POST['opt_attendance_orgs'] ?? [];
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
+    header('Content-Type: application/json');
+    $action = $_POST['action'];
 
-        $part     = isset($_POST['opt_participation']) ? true : false;
-        $partOrgs = $_POST['opt_participation_orgs'] ?? [];
+    if ($action === 'modify') {
+        $aid = intval($_POST['aid']);
+        $oid = intval($_POST['oid']);
+        $aname = trim($_POST['aname']);
+        $date = trim($_POST['date']);
+        $room = intval($_POST['room']);
+        $timeslot = trim($_POST['timeslot']);
 
-        $sat      = isset($_POST['opt_satisfactory']) ? true : false;
-        $satOrgs  = $_POST['opt_satisfactory_orgs'] ?? [];
-
-        // Security check: Ensure student belongs to at least one organisation managed by this teacher
-        $chkTeachOrg = $conn->prepare("
-            SELECT COUNT(*) FROM membership m 
-            JOIN organisations o ON m.oid = o.oid 
-            WHERE m.sid = ? AND o.tid = ?
+        // Security check: ensure activity belongs to teacher and new oid is managed by this teacher
+        $chk = $conn->prepare("
+            SELECT a.aid FROM activity a 
+            JOIN organisations o ON a.oid = o.oid 
+            WHERE a.aid = ? AND o.tid = ?
         ");
-        $chkTeachOrg->bind_param("ss", $uid, $teacherUid);
-        $chkTeachOrg->execute();
-        $chkTeachOrg->bind_result($teachOrgCount);
-        $chkTeachOrg->fetch();
-        $chkTeachOrg->close();
+        $chk->bind_param("is", $aid, $teacherUid);
+        $chk->execute();
+        $chkRes = $chk->get_result();
+        $hasAccess = $chkRes->num_rows > 0;
+        $chk->close();
 
-        if ($teachOrgCount == 0) {
-            die("Unauthorized: You can only export reports for students in your managed organisations.");
+        if (!$hasAccess || !in_array($oid, $managedOrgIds)) {
+            echo json_encode(['status' => 'error', 'message' => 'Unauthorized: You can only modify activities for your own organisations.']);
+            exit();
         }
 
-        $stmt = $conn->prepare("SELECT * FROM users WHERE uid = ? AND LOWER(role) = 'student'");
-        $stmt->bind_param("s", $uid);
-        $stmt->execute();
-        $studentRes = $stmt->get_result();
-        $student = $studentRes->fetch_assoc();
+        $stmt = $conn->prepare("UPDATE activity SET oid = ?, aname = ?, date = ?, room = ?, timeslot = ? WHERE aid = ?");
+        $stmt->bind_param("issisi", $oid, $aname, $date, $room, $timeslot, $aid);
+        if ($stmt->execute()) {
+            echo json_encode(['status' => 'success']);
+        } else {
+            echo json_encode(['status' => 'error', 'message' => $stmt->error]);
+        }
         $stmt->close();
-
-        if (!$student) {
-            die("Error: PDF report generation is strictly restricted to users with the 'student' role.");
-        }
-
-        $orgStmt = $conn->prepare("
-            SELECT o.oid, o.oname 
-            FROM membership m 
-            JOIN organisations o ON m.oid = o.oid 
-            WHERE m.sid = ?
-        ");
-        $orgStmt->bind_param("s", $uid);
-        $orgStmt->execute();
-        $enrolledOrgsRes = $orgStmt->get_result();
-        $enrolledOrgsRaw = $enrolledOrgsRes->fetch_all(MYSQLI_ASSOC);
-        $orgStmt->close();
-
-        $orgMap = [];
-        foreach ($enrolledOrgsRaw as $o) {
-            $orgMap[$o['oid']] = $o['oname'];
-        }
-        $allOrgIds = array_keys($orgMap);
-
-        $getOrgActivities = function($oid) use ($conn, $start, $end) {
-            $actQuery = "
-                SELECT a.aid, a.oid, a.aname, a.date, a.room 
-                FROM activity a 
-                WHERE a.oid = ? AND a.date BETWEEN ? AND ?
-                ORDER BY a.date ASC
-            ";
-            $actStmt = $conn->prepare($actQuery);
-            $actStmt->bind_param("sss", $oid, $start, $end);
-            $actStmt->execute();
-            $res = $actStmt->get_result();
-            $data = $res->fetch_all(MYSQLI_ASSOC);
-            $actStmt->close();
-            return $data;
-        };
-
-        $getAllActivities = function($targetOids) use ($conn, $start, $end) {
-            if (empty($targetOids)) return [];
-            $placeholders = implode(',', array_fill(0, count($targetOids), '?'));
-            $actQuery = "
-                SELECT a.aid, a.oid, a.aname, a.date, a.room 
-                FROM activity a 
-                WHERE a.oid IN ($placeholders) AND a.date BETWEEN ? AND ?
-                ORDER BY a.date ASC
-            ";
-            $types = str_repeat('s', count($targetOids)) . 'ss';
-            $params = array_merge($targetOids, [$start, $end]);
-            
-            $actStmt = $conn->prepare($actQuery);
-            $actStmt->bind_param($types, ...$params);
-            $actStmt->execute();
-            $res = $actStmt->get_result();
-            $data = $res->fetch_all(MYSQLI_ASSOC);
-            $actStmt->close();
-            return $data;
-        };
-
-        $toRoman = function($num) {
-            $map = [
-                1 => 'I', 2 => 'II', 3 => 'III', 4 => 'IV', 5 => 'V',
-                6 => 'VI', 7 => 'VII', 8 => 'VIII', 9 => 'IX', 10 => 'X'
-            ];
-            return $map[$num] ?? $num;
-        };
-
-        $attendanceMap = [];
-        if (!empty($allOrgIds)) {
-            $attStmt = $conn->prepare("
-                SELECT aid, attend, rate, `s.rate` 
-                FROM attendance 
-                WHERE sid = ?
-            ");
-            $attStmt->bind_param("s", $uid);
-            $attStmt->execute();
-            $attRes = $attStmt->get_result();
-            while ($row = $attRes->fetch_assoc()) {
-                $attendanceMap[$row['aid']] = $row;
-            }
-            $attStmt->close();
-        }
-
-        header('Content-Type: application/pdf');
-        header('Content-Disposition: attachment; filename="Student_Report_' . $uid . '.pdf"');
-
-        $pdfCommands = [];
-        $pdfCommands[] = ["font" => "F1", "size" => 16, "x" => 80, "y" => 730, "text" => "ECAMS STUDENT REPORT"];
-        
-        $details = [
-            ["label" => "UID: ", "val" => ($student['uid'] ?? '')],
-            ["label" => "Name: ", "val" => ($student['name'] ?? '')],
-            ["label" => "Class: ", "val" => ($student['class'] ?? '')],
-            ["label" => "CID: ", "val" => ($student['cid'] ?? '')],
-            ["label" => "Email: ", "val" => ($student['email'] ?? '')],
-            ["label" => "Role: ", "val" => ($student['role'] ?? '')],
-            ["label" => "Date Range: ", "val" => $start . " to " . $end]
-        ];
-
-        $y = 690;
-        foreach ($details as $d) {
-            $pdfCommands[] = ["font" => "F1", "size" => 11, "x" => 40, "y" => $y, "text" => $d['label']];
-            $pdfCommands[] = ["font" => "F2", "size" => 11, "x" => 120, "y" => $y, "text" => $d['val']];
-            $y -= 18;
-        }
-
-        $y -= 5;
-        $pdfCommands[] = ["font" => "F1", "size" => 10, "x" => 40, "y" => $y, "text" => "--------------------------------------------------------------------------------"];
-        $y -= 20;
-
-        $sectionCounter = 1;
-
-        if ($att) {
-            $pdfCommands[] = ["font" => "F1", "size" => 12, "x" => 40, "y" => $y, "text" => $toRoman($sectionCounter) . ". Attendance Record:"];
-            $y -= 18;
-
-            $hasAll = in_array('ALL', $attOrgs);
-            $specificOrgs = array_diff($attOrgs, ['ALL']);
-            if (empty($attOrgs)) { $hasAll = true; }
-
-            foreach ($specificOrgs as $oid) {
-                if ($y < 50) break;
-                if (!isset($orgMap[$oid])) continue;
-                $orgName = $orgMap[$oid];
-                $pdfCommands[] = ["font" => "F1", "size" => 11, "x" => 50, "y" => $y, "text" => "[" . $orgName . "]"];
-                $y -= 16;
-
-                $activities = $getOrgActivities($oid);
-                $attCount = 0;
-                $attTotal = count($activities);
-                $index = 1;
-
-                foreach ($activities as $act) {
-                    if ($y < 50) break;
-                    $aid = $act['aid'];
-                    $status = "NOT PARTICIPATED";
-                    if (isset($attendanceMap[$aid]) && intval($attendanceMap[$aid]['attend']) === 1) {
-                        $status = "PARTICIPATED";
-                        $attCount++;
-                    }
-                    
-                    $actLabel = $index . ". " . $act['aname'] . " (" . $act['date'] . ")";
-                    $pdfCommands[] = ["font" => "F1", "size" => 10, "x" => 60, "y" => $y, "text" => $actLabel];
-                    $pdfCommands[] = ["font" => "F2", "size" => 10, "x" => 330, "y" => $y, "text" => $status];
-                    $y -= 15;
-                    $index++;
-                }
-                $avgAtt = $attTotal > 0 ? round(($attCount / $attTotal) * 100, 1) : 0;
-                $pdfCommands[] = ["font" => "F1", "size" => 10, "x" => 60, "y" => $y, "text" => "Average Attendance: " . $avgAtt . "% (" . $attCount . "/" . $attTotal . ")"];
-                $y -= 20;
-            }
-
-            if ($hasAll) {
-                if ($y >= 50) {
-                    $pdfCommands[] = ["font" => "F1", "size" => 11, "x" => 50, "y" => $y, "text" => "[All Organisations]"];
-                    $y -= 16;
-
-                    $activities = $getAllActivities($allOrgIds);
-                    $attCount = 0;
-                    $attTotal = count($activities);
-                    $index = 1;
-
-                    foreach ($activities as $act) {
-                        if ($y < 50) break;
-                        $aid = $act['aid'];
-                        $status = "NOT PARTICIPATED";
-                        if (isset($attendanceMap[$aid]) && intval($attendanceMap[$aid]['attend']) === 1) {
-                            $status = "PARTICIPATED";
-                            $attCount++;
-                        }
-                        
-                        $orgBracket = isset($orgMap[$act['oid']]) ? " (" . $orgMap[$act['oid']] . ")" : "";
-                        $actLabel = $index . ". " . $act['aname'] . $orgBracket . " (" . $act['date'] . ")";
-
-                        $pdfCommands[] = ["font" => "F1", "size" => 10, "x" => 60, "y" => $y, "text" => $actLabel];
-                        $pdfCommands[] = ["font" => "F2", "size" => 10, "x" => 330, "y" => $y, "text" => $status];
-                        $y -= 15;
-                        $index++;
-                    }
-                    $avgAtt = $attTotal > 0 ? round(($attCount / $attTotal) * 100, 1) : 0;
-                    $pdfCommands[] = ["font" => "F1", "size" => 10, "x" => 60, "y" => $y, "text" => "Average Attendance: " . $avgAtt . "% (" . $attCount . "/" . $attTotal . ")"];
-                    $y -= 20;
-                }
-            }
-
-            $y -= 10;
-            $sectionCounter++;
-        }
-
-        if ($part && $y > 60) {
-            $pdfCommands[] = ["font" => "F1", "size" => 12, "x" => 40, "y" => $y, "text" => $toRoman($sectionCounter) . ". Average Participation Rating:"];
-            $y -= 18;
-
-            $hasAll = in_array('ALL', $partOrgs);
-            $specificOrgs = array_diff($partOrgs, ['ALL']);
-            if (empty($partOrgs)) { $hasAll = true; }
-
-            foreach ($specificOrgs as $oid) {
-                if ($y < 50) break;
-                if (!isset($orgMap[$oid])) continue;
-                $orgName = $orgMap[$oid];
-                $pdfCommands[] = ["font" => "F1", "size" => 11, "x" => 50, "y" => $y, "text" => "[" . $orgName . "]"];
-                $y -= 16;
-
-                $activities = $getOrgActivities($oid);
-                $partSum = 0;
-                $partCount = 0;
-                $index = 1;
-
-                foreach ($activities as $act) {
-                    if ($y < 50) break;
-                    $aid = $act['aid'];
-                    $rate = isset($attendanceMap[$aid]['rate']) ? $attendanceMap[$aid]['rate'] : 'N/A';
-                    if (is_numeric($rate)) {
-                        $partSum += floatval($rate);
-                        $partCount++;
-                    }
-
-                    $actLabel = $index . ". " . $act['aname'];
-                    $pdfCommands[] = ["font" => "F1", "size" => 10, "x" => 60, "y" => $y, "text" => $actLabel];
-                    $pdfCommands[] = ["font" => "F2", "size" => 10, "x" => 330, "y" => $y, "text" => "Rate: " . $rate];
-                    $y -= 15;
-                    $index++;
-                }
-                $avgPart = $partCount > 0 ? round($partSum / $partCount, 2) : 0;
-                $pdfCommands[] = ["font" => "F1", "size" => 10, "x" => 60, "y" => $y, "text" => "Average Rating: " . $avgPart];
-                $y -= 20;
-            }
-
-            if ($hasAll) {
-                if ($y >= 50) {
-                    $pdfCommands[] = ["font" => "F1", "size" => 11, "x" => 50, "y" => $y, "text" => "[All Organisations]"];
-                    $y -= 16;
-
-                    $activities = $getAllActivities($allOrgIds);
-                    $partSum = 0;
-                    $partCount = 0;
-                    $index = 1;
-
-                    foreach ($activities as $act) {
-                        if ($y < 50) break;
-                        $aid = $act['aid'];
-                        $rate = isset($attendanceMap[$aid]['rate']) ? $attendanceMap[$aid]['rate'] : 'N/A';
-                        if (is_numeric($rate)) {
-                            $partSum += floatval($rate);
-                            $partCount++;
-                        }
-
-                        $orgBracket = isset($orgMap[$act['oid']]) ? " (" . $orgMap[$act['oid']] . ")" : "";
-                        $actLabel = $index . ". " . $act['aname'] . $orgBracket;
-
-                        $pdfCommands[] = ["font" => "F1", "size" => 10, "x" => 60, "y" => $y, "text" => $actLabel];
-                        $pdfCommands[] = ["font" => "F2", "size" => 10, "x" => 330, "y" => $y, "text" => "Rate: " . $rate];
-                        $y -= 15;
-                        $index++;
-                    }
-                    $avgPart = $partCount > 0 ? round($partSum / $partCount, 2) : 0;
-                    $pdfCommands[] = ["font" => "F1", "size" => 10, "x" => 60, "y" => $y, "text" => "Average Rating: " . $avgPart];
-                    $y -= 20;
-                }
-            }
-
-            $y -= 10;
-            $sectionCounter++;
-        }
-
-        if ($sat && $y > 60) {
-            $pdfCommands[] = ["font" => "F1", "size" => 12, "x" => 40, "y" => $y, "text" => $toRoman($sectionCounter) . ". Average Satisfactory Rating:"];
-            $y -= 18;
-
-            $hasAll = in_array('ALL', $satOrgs);
-            $specificOrgs = array_diff($satOrgs, ['ALL']);
-            if (empty($satOrgs)) { $hasAll = true; }
-
-            foreach ($specificOrgs as $oid) {
-                if ($y < 50) break;
-                if (!isset($orgMap[$oid])) continue;
-                $orgName = $orgMap[$oid];
-                $pdfCommands[] = ["font" => "F1", "size" => 11, "x" => 50, "y" => $y, "text" => "[" . $orgName . "]"];
-                $y -= 16;
-
-                $activities = $getOrgActivities($oid);
-                $satSum = 0;
-                $satCount = 0;
-                $index = 1;
-
-                foreach ($activities as $act) {
-                    if ($y < 50) break;
-                    $aid = $act['aid'];
-                    $sRate = isset($attendanceMap[$aid]['s.rate']) ? $attendanceMap[$aid]['s.rate'] : 'N/A';
-                    if (is_numeric($sRate)) {
-                        $satSum += floatval($sRate);
-                        $satCount++;
-                    }
-
-                    $actLabel = $index . ". " . $act['aname'];
-                    $pdfCommands[] = ["font" => "F1", "size" => 10, "x" => 60, "y" => $y, "text" => $actLabel];
-                    $pdfCommands[] = ["font" => "F2", "size" => 10, "x" => 330, "y" => $y, "text" => "Satisfactory Rate: " . $sRate];
-                    $y -= 15;
-                    $index++;
-                }
-                $avgSat = $satCount > 0 ? round($satSum / $satCount, 2) : 0;
-                $pdfCommands[] = ["font" => "F1", "size" => 10, "x" => 60, "y" => $y, "text" => "Average Rating: " . $avgSat];
-                $y -= 20;
-            }
-
-            if ($hasAll) {
-                if ($y >= 50) {
-                    $pdfCommands[] = ["font" => "F1", "size" => 11, "x" => 50, "y" => $y, "text" => "[All Organisations]"];
-                    $y -= 16;
-
-                    $activities = $getAllActivities($allOrgIds);
-                    $satSum = 0;
-                    $satCount = 0;
-                    $index = 1;
-
-                    foreach ($activities as $act) {
-                        if ($y < 50) break;
-                        $aid = $act['aid'];
-                        $sRate = isset($attendanceMap[$aid]['s.rate']) ? $attendanceMap[$aid]['s.rate'] : 'N/A';
-                        if (is_numeric($sRate)) {
-                            $satSum += floatval($sRate);
-                            $satCount++;
-                        }
-
-                        $orgBracket = isset($orgMap[$act['oid']]) ? " (" . $orgMap[$act['oid']] . ")" : "";
-                        $actLabel = $index . ". " . $act['aname'] . $orgBracket;
-
-                        $pdfCommands[] = ["font" => "F1", "size" => 10, "x" => 60, "y" => $y, "text" => $actLabel];
-                        $pdfCommands[] = ["font" => "F2", "size" => 10, "x" => 330, "y" => $y, "text" => "Satisfactory Rate: " . $sRate];
-                        $y -= 15;
-                        $index++;
-                    }
-                    $avgSat = $satCount > 0 ? round($satSum / $satCount, 2) : 0;
-                    $pdfCommands[] = ["font" => "F1", "size" => 10, "x" => 60, "y" => $y, "text" => "Average Rating: " . $avgSat];
-                    $y -= 20;
-                }
-            }
-        }
-
-        $contentStream = "";
-        $contentStream .= "0 g 0 G 40 720 32 32 re f\n";
-
-        foreach ($pdfCommands as $cmd) {
-            $escapedText = addslashes($cmd['text']);
-            $contentStream .= "BT /{$cmd['font']} {$cmd['size']} Tf {$cmd['x']} {$cmd['y']} Td ({$escapedText}) Tj ET\n";
-        }
-
-        $streamLength = strlen($contentStream);
-        echo "%PDF-1.4\n";
-        echo "1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n";
-        echo "2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n";
-        echo "3 0 obj << /Type /Page /Parent 2 0 R /Resources << /Font << /F1 4 0 R /F2 5 0 R >> >> /MediaBox [0 0 612 792] /Contents 6 0 R >> endobj\n";
-        echo "4 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Courier-Bold >> endobj\n";
-        echo "5 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Courier >> endobj\n";
-        echo "6 0 obj << /Length " . $streamLength . " >> stream\n";
-        echo $contentStream;
-        echo "endstream\nendobj\n";
-        
-        echo "xref\n0 7\n";
-        echo "0000000000 65535 f \n";
-        echo "0000000009 00000 n \n";
-        echo "0000000058 00000 n \n";
-        echo "0000000115 00000 n \n";
-        echo "0000000260 00000 n \n";
-        echo "0000000327 00000 n \n";
-        echo "0000000408 00000 n \n";
-        echo "trailer << /Size 7 /Root 1 0 R >>\nstartxref\n550\n%%EOF";
-        exit;
+        exit();
     }
 
-    if (isset($_SERVER['CONTENT_TYPE']) && strpos($_SERVER['CONTENT_TYPE'], 'application/json') !== false) {
-        header('Content-Type: application/json');
-        $data = json_decode(file_get_contents('php://input'), true);
+    if ($action === 'create') {
+        $oid = intval($_POST['oid']);
+        $aname = trim($_POST['aname']);
+        $date = trim($_POST['date']);
+        $room = intval($_POST['room']);
+        $timeslot = trim($_POST['timeslot']);
 
-        if (!$data) {
-            echo json_encode(['success' => false, 'message' => 'Invalid payload.']);
-            exit;
-        }
-
-        if (isset($data['action']) && $data['action'] === 'hash_preview') {
-            $plain = $data['password'] ?? '';
-            if (empty($plain)) {
-                echo json_encode(['success' => true, 'hash' => '']);
-                exit;
-            }
-            $hashed = password_hash($plain, PASSWORD_DEFAULT);
-            echo json_encode(['success' => true, 'hash' => $hashed]);
-            exit;
-        }
-
-        if (isset($data['action']) && $data['action'] === 'delete') {
-            $uid = $data['uid'] ?? '';
-            if (empty($uid)) {
-                echo json_encode(['success' => false, 'message' => 'UID required for deletion.']);
-                exit;
-            }
-
-            // Security check for modification/deletion rights
-            $chkTeachOrg = $conn->prepare("
-                SELECT COUNT(*) FROM membership m 
-                JOIN organisations o ON m.oid = o.oid 
-                WHERE m.sid = ? AND o.tid = ?
-            ");
-            $chkTeachOrg->bind_param("ss", $uid, $teacherUid);
-            $chkTeachOrg->execute();
-            $chkTeachOrg->bind_result($delCount);
-            $chkTeachOrg->fetch();
-            $chkTeachOrg->close();
-
-            if ($delCount == 0) {
-                echo json_encode(['success' => false, 'message' => 'Unauthorized: You can only modify or delete users in your own organisation.']);
-                exit;
-            }
-
-            $conn->begin_transaction();
-            try {
-                $delMem = $conn->prepare("DELETE FROM membership WHERE sid = ?");
-                $delMem->bind_param("s", $uid);
-                $delMem->execute();
-                $delMem->close();
-
-                $delUsr = $conn->prepare("DELETE FROM users WHERE uid = ?");
-                $delUsr->bind_param("s", $uid);
-                $delUsr->execute();
-                $delUsr->close();
-
-                $conn->commit();
-                echo json_encode(['success' => true, 'message' => 'User deleted successfully.']);
-            } catch (Exception $e) {
-                $conn->rollback();
-                echo json_encode(['success' => false, 'message' => 'Delete failed: ' . $e->getMessage()]);
-            }
-            exit;
-        }
-
-        $uid      = $data['uid'] ?? '';
-        $name     = $data['name'] ?? '';
-        $class    = $data['class'] ?? '';
-        $cid      = $data['cid'] ?? '';
-        $email    = $data['email'] ?? '';
-        $plainPwd = $data['password'] ?? '';
-        $role     = $data['role'] ?? '';
-        $orgs     = $data['orgs'] ?? [];
-
-        if (empty($uid)) {
-            echo json_encode(['success' => false, 'message' => 'UID is required.']);
-            exit;
-        }
-
-        // Security check for update rights
-        $chkTeachOrg = $conn->prepare("
-            SELECT COUNT(*) FROM membership m 
-            JOIN organisations o ON m.oid = o.oid 
-            WHERE m.sid = ? AND o.tid = ?
-        ");
-        $chkTeachOrg->bind_param("ss", $uid, $teacherUid);
-        $chkTeachOrg->execute();
-        $chkTeachOrg->bind_result($updCount);
-        $chkTeachOrg->fetch();
-        $chkTeachOrg->close();
-
-        if ($updCount == 0) {
-            echo json_encode(['success' => false, 'message' => 'Unauthorized: You can only modify details for users in your own organisation.']);
-            exit;
+        // Strict Security check: ensure organisation is managed by this teacher
+        if (!in_array($oid, $managedOrgIds)) {
+            echo json_encode(['status' => 'error', 'message' => 'Unauthorized: You can only create activities for organisations you manage.']);
+            exit();
         }
 
         $conn->begin_transaction();
         try {
-            if (!empty($plainPwd)) {
-                $hashedPassword = password_hash($plainPwd, PASSWORD_DEFAULT);
-                $updateUserStmt = $conn->prepare("
-                    UPDATE users 
-                    SET name = ?, class = ?, cid = ?, email = ?, password = ?, role = ? 
-                    WHERE uid = ?
-                ");
-                $updateUserStmt->bind_param("sssssss", $name, $class, $cid, $email, $hashedPassword, $role, $uid);
-                $updateUserStmt->execute();
-                $updateUserStmt->close();
-            } else {
-                $updateUserStmt = $conn->prepare("
-                    UPDATE users 
-                    SET name = ?, class = ?, cid = ?, email = ?, role = ? 
-                    WHERE uid = ?
-                ");
-                $updateUserStmt->bind_param("ssssss", $name, $class, $cid, $email, $role, $uid);
-                $updateUserStmt->execute();
-                $updateUserStmt->close();
-            }
+            $stmt = $conn->prepare("INSERT INTO activity (oid, aname, date, room, timeslot) VALUES (?, ?, ?, ?, ?)");
+            $stmt->bind_param("issis", $oid, $aname, $date, $room, $timeslot);
+            $stmt->execute();
+            $newAid = $stmt->insert_id;
+            $stmt->close();
 
-            $delMemStmt = $conn->prepare("DELETE FROM membership WHERE sid = ?");
-            $delMemStmt->bind_param("s", $uid);
-            $delMemStmt->execute();
-            $delMemStmt->close();
+            $memStmt = $conn->prepare("SELECT sid FROM membership WHERE oid = ?");
+            $memStmt->bind_param("i", $oid);
+            $memStmt->execute();
+            $memRes = $memStmt->get_result();
+            $members = $memRes->fetch_all(MYSQLI_ASSOC);
+            $memStmt->close();
 
-            if (!empty($orgs)) {
-                $insertMemStmt = $conn->prepare("INSERT INTO membership (sid, oid) VALUES (?, ?)");
-                foreach ($orgs as $oid) {
-                    $insertMemStmt->bind_param("ss", $uid, $oid);
-                    $insertMemStmt->execute();
-                }
-                $insertMemStmt->close();
+            $attStmt = $conn->prepare("INSERT INTO attendance (aid, sid, attend, rate, `s.rate`) VALUES (?, ?, 0, 10, 10)");
+            foreach ($members as $member) {
+                $attStmt->bind_param("is", $newAid, $member['sid']);
+                $attStmt->execute();
             }
+            $attStmt->close();
 
             $conn->commit();
-            echo json_encode(['success' => true, 'message' => 'User updated successfully.']);
+            echo json_encode(['status' => 'success', 'aid' => $newAid]);
         } catch (Exception $e) {
             $conn->rollback();
-            echo json_encode(['success' => false, 'message' => 'Database error: ' . $e->getMessage()]);
+            echo json_encode(['status' => 'error', 'message' => $e->getMessage()]);
         }
-        exit;
+        exit();
+    }
+
+    if ($action === 'delete') {
+        $aid = intval($_POST['aid']);
+
+        // Security check: ensure activity belongs to teacher's managed organisation
+        $chk = $conn->prepare("
+            SELECT a.aid FROM activity a 
+            JOIN organisations o ON a.oid = o.oid 
+            WHERE a.aid = ? AND o.tid = ?
+        ");
+        $chk->bind_param("is", $aid, $teacherUid);
+        $chk->execute();
+        $chkRes = $chk->get_result();
+        $hasAccess = $chkRes->num_rows > 0;
+        $chk->close();
+
+        if (!$hasAccess) {
+            echo json_encode(['status' => 'error', 'message' => 'Unauthorized: You can only delete activities for your own organisations.']);
+            exit();
+        }
+
+        $conn->begin_transaction();
+        try {
+            $delAttStmt = $conn->prepare("DELETE FROM attendance WHERE aid = ?");
+            $delAttStmt->bind_param("i", $aid);
+            $delAttStmt->execute();
+            $delAttStmt->close();
+
+            $delActStmt = $conn->prepare("DELETE FROM activity WHERE aid = ?");
+            $delActStmt->bind_param("i", $aid);
+            $delActStmt->execute();
+            $delActStmt->close();
+
+            $conn->commit();
+            echo json_encode(['status' => 'success']);
+        } catch (Exception $e) {
+            $conn->rollback();
+            echo json_encode(['status' => 'error', 'message' => $e->getMessage()]);
+        }
+        exit();
     }
 }
 
-$allOrganisations = [];
-$orgRes = $conn->query("SELECT oid, oname FROM organisations ORDER BY oname ASC");
-if ($orgRes) {
-    $allOrganisations = $orgRes->fetch_all(MYSQLI_ASSOC);
-}
+// Fetch ONLY organisations managed by this teacher for the dropdown list
+$orgStmt = $conn->prepare("SELECT oid, oname, tid FROM organisations WHERE tid = ? ORDER BY oid ASC");
+$orgStmt->bind_param("s", $teacherUid);
+$orgStmt->execute();
+$orgRes = $orgStmt->get_result();
+$organizations = $orgRes->fetch_all(MYSQLI_ASSOC);
+$orgStmt->close();
 
-$classes = [];
-$classRes = $conn->query("SELECT DISTINCT class FROM users WHERE class IS NOT NULL AND class != '' ORDER BY class ASC");
-if ($classRes) {
-    while ($row = $classRes->fetch_assoc()) {
-        $classes[] = $row['class'];
-    }
-}
+// Fetch all activities joined with organisations to get the organisation names (`oname`) for all activities
+$stmt = $conn->query("
+    SELECT a.aid, a.oid, a.aname, a.date, a.room, a.timeslot, o.oname 
+    FROM activity a 
+    LEFT JOIN organisations o ON a.oid = o.oid
+");
+$dbActivities = $stmt ? $stmt->fetch_all(MYSQLI_ASSOC) : [];
 
-$users = [];
-$query = "
-    SELECT 
-        u.uid, 
-        u.name, 
-        u.class, 
-        u.cid,
-        u.email,
-        u.role,
-        CASE 
-            WHEN LOWER(u.role) = 'student' THEN (
-                SELECT GROUP_CONCAT(CONCAT(o.oid, ':', o.oname) SEPARATOR '||')
-                FROM membership m
-                JOIN organisations o ON m.oid = o.oid
-                WHERE m.sid = u.uid
-            )
-            ELSE (
-                SELECT GROUP_CONCAT(CONCAT(o.oid, ':', o.oname) SEPARATOR '||')
-                FROM organisations o
-                WHERE o.tid = u.uid
-            )
-        END AS org_data
-    FROM users u
-    ORDER BY u.uid ASC
-";
-$userRes = $conn->query($query);
-if ($userRes) {
-    $rawUsers = $userRes->fetch_all(MYSQLI_ASSOC);
-
-    foreach ($rawUsers as $row) {
-        $orgList = [];
-        if (!empty($row['org_data'])) {
-            $pairs = explode('||', $row['org_data']);
-            foreach ($pairs as $pair) {
-                $parts = explode(':', $pair, 2);
-                if (count($parts) === 2) {
-                    $orgList[] = ['oid' => $parts[0], 'oname' => $parts[1]];
-                }
-            }
-        }
-        $row['organisations'] = $orgList;
-        
-        $isStudentInMyOrgs = false;
-        if (strtolower($row['role']) === 'student') {
-            foreach ($orgList as $o) {
-                if (in_array($o['oid'], $managedOrgIds)) {
-                    $isStudentInMyOrgs = true;
-                    break;
-                }
-            }
-        }
-        $row['is_in_my_orgs'] = $isStudentInMyOrgs;
-
-        unset($row['org_data']);
-        $users[] = $row;
-    }
-}
+$events = array_map(function($act) use ($managedOrgIds) {
+    $isManaged = in_array($act['oid'], $managedOrgIds);
+    return [
+        'id' => $act['aid'],
+        'title' => $act['aname'],
+        'start' => $act['date'],
+        'extendedProps' => [
+            'aid' => $act['aid'],
+            'oid' => $act['oid'],
+            'oname' => $act['oname'] ?? 'Unknown Organisation',
+            'aname' => $act['aname'],
+            'date' => $act['date'],
+            'room' => $act['room'],
+            'timeslot' => $act['timeslot'] ?? 'Lunch Recess',
+            'isManaged' => $isManaged
+        ]
+    ];
+}, $dbActivities);
 ?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ECAMS - Teacher User Profile</title>
+    <title>ECAMS - Teacher Activities Calendar</title>
     <link rel="icon" type="image/x-icon" href="sECAMS.png">
+
+    <script src="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.10/index.global.min.js"></script>
 
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
-        html, body { height: 100%; overflow: hidden; }
+        
+        html, body {
+            height: 100%;
+            overflow: hidden;
+        }
+
         body {
             font-family: system-ui, -apple-system, sans-serif;
             background-color: #e0f2fe;
             color: #1e293b;
-            min-height: 100vh;
+            height: 100vh;
             display: flex;
             flex-direction: column;
             overflow-x: hidden;
@@ -684,419 +226,222 @@ if ($userRes) {
             z-index: 20;
             height: 110px;
             box-sizing: border-box;
+            flex-shrink: 0;
         }
 
-        .header-content {
-            max-width: 100%;
-            margin: 0 auto;
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-        }
-
+        .header-content { max-width: 100%; margin: 0 auto; display: flex; align-items: center; justify-content: space-between; }
         .header-left { display: flex; align-items: center; gap: 1rem; }
         .logo { height: 85px; width: auto; display: block; }
         .header-titles h1 { font-size: 1.35rem; font-weight: 700; color: #2e8ccb; letter-spacing: -0.02em; }
         .sub-header-row { display: flex; align-items: center; gap: 12px; margin-top: 2px; }
         .sub-header-row p { font-size: 0.85rem; color: #64748b; }
-        
         .btn-logout {
-            background-color: #eb4174;
-            color: #ffffff;
-            font-size: 0.75rem;
-            font-weight: 700;
-            padding: 0.25rem 0.65rem;
-            border-radius: 4px;
-            text-decoration: none;
-            transition: background-color 0.2s;
-            display: inline-block;
+            background-color: #eb4174; color: #ffffff; font-size: 0.75rem; font-weight: 700;
+            padding: 0.25rem 0.65rem; border-radius: 4px; text-decoration: none; transition: background-color 0.2s; display: inline-block;
         }
         .btn-logout:hover { background-color: #9f1239; }
-
         .clock-widget { text-align: right; padding: 0.5rem 0.85rem; }
         .clock-time { font-size: 1.15rem; font-weight: 700; color: #0f172a; font-variant-numeric: tabular-nums; }
         .clock-date { font-size: 0.75rem; font-weight: 500; color: #64748b; text-transform: uppercase; letter-spacing: 0.03em; }
 
+        .fc-daygrid-day {
+            transition: outline 0.15s ease, background-color 1.25s ease, color 1.25s ease !important;
+            cursor: pointer;
+            position: relative;
+        }
+
+        .fc-daygrid-day-number { transition: color 1.25s ease !important; }
+
+        .fc-daygrid-day.fc-day-past { background-color: #cbd5e1 !important; }
+        .fc-daygrid-day.fc-day-past .fc-daygrid-day-number { color: #64748b !important; }
+        .fc-daygrid-day.fc-day-past:hover { outline: none !important; background-color: #cbd5e1 !important; }
+        .fc-daygrid-day.fc-day-past.has-event { cursor: pointer !important; }
+        .fc-daygrid-day.fc-day-past.has-event:hover { outline: 4px double #8fa7ea !important; outline-offset: -4px; }
+
+        .fc-daygrid-day:hover {
+            outline: 4px double #8fa7ea !important;
+            outline-offset: -4px;
+            z-index: 5 !important;
+            background-color: transparent;
+        }
+
+        .fc-daygrid-day.has-event:hover { outline: 4px double #e99090 !important; outline-offset: -4px; }
+
+        .calendar-active-mode-red .fc-daygrid-day:not(.fc-day-past) { background-color: #fff1f2 !important; }
+        .calendar-active-mode-blue .fc-daygrid-day:not(.fc-day-past) { background-color: #f0fdf4 !important; }
+
+        .calendar-active-mode-red .fc-daygrid-day.clicked-0:not(.fc-day-past) { background-color: #ea580c !important; }
+        .calendar-active-mode-red .fc-daygrid-day.clicked-0:not(.fc-day-past) .fc-daygrid-day-number { color: #ffffff !important; font-weight: 700; }
+        .calendar-active-mode-red .fc-daygrid-day.clicked-1:not(.fc-day-past) { background-color: #f2b88e !important; }
+        .calendar-active-mode-red .fc-daygrid-day.clicked-1:not(.fc-day-past) .fc-daygrid-day-number { color: #ffffff !important; font-weight: 600; }
+        .calendar-active-mode-red .fc-daygrid-day.clicked-2:not(.fc-day-past) { background-color: #f7e4b9 !important; }
+        .calendar-active-mode-red .fc-daygrid-day.clicked-2:not(.fc-day-past) .fc-daygrid-day-number { color: #7c2d12 !important; font-weight: 600; }
+        .calendar-active-mode-red .fc-daygrid-day.clicked-3:not(.fc-day-past) { background-color: #fffbe4 !important; }
+        .calendar-active-mode-red .fc-daygrid-day.clicked-3:not(.fc-day-past) .fc-daygrid-day-number { color: #9f1239 !important; font-weight: 500; }
+
+        .calendar-active-mode-blue .fc-daygrid-day.clicked-0:not(.fc-day-past) { background-color: #0284c7 !important; }
+        .calendar-active-mode-blue .fc-daygrid-day.clicked-0:not(.fc-day-past) .fc-daygrid-day-number { color: #ffffff !important; font-weight: 700; }
+        .calendar-active-mode-blue .fc-daygrid-day.clicked-1:not(.fc-day-past) { background-color: #38bdf8 !important; }
+        .calendar-active-mode-blue .fc-daygrid-day.clicked-1:not(.fc-day-past) .fc-daygrid-day-number { color: #ffffff !important; font-weight: 600; }
+        .calendar-active-mode-blue .fc-daygrid-day.clicked-2:not(.fc-day-past) { background-color: #6ee7b7 !important; }
+        .calendar-active-mode-blue .fc-daygrid-day.clicked-2:not(.fc-day-past) .fc-daygrid-day-number { color: #064e3b !important; font-weight: 600; }
+        .calendar-active-mode-blue .fc-daygrid-day.clicked-3:not(.fc-day-past) { background-color: #d1fae5 !important; }
+        .calendar-active-mode-blue .fc-daygrid-day.clicked-3:not(.fc-day-past) .fc-daygrid-day-number { color: #065f46 !important; font-weight: 500; }
+
+        .calendar-active-mode-blue .fc-daygrid-day.has-event:not(.fc-day-past),
+        .calendar-active-mode-blue .fc-daygrid-day.has-event[class*="clicked-"]:not(.fc-day-past),
+        .calendar-active-mode-red .fc-daygrid-day.has-event:not(.clicked-0):not(.fc-day-past),
+        .calendar-active-mode-red .fc-daygrid-day.has-event:not(.clicked-0)[class*="clicked-"]:not(.fc-day-past) {
+            background-color: #fecdd3 !important;
+            z-index: 4 !important;
+        }
+
+        .calendar-active-mode-blue .fc-daygrid-day.has-event:not(.fc-day-past) .fc-daygrid-day-number,
+        .calendar-active-mode-blue .fc-daygrid-day.has-event[class*="clicked-"]:not(.fc-day-past) .fc-daygrid-day-number,
+        .calendar-active-mode-red .fc-daygrid-day.has-event:not(.clicked-0):not(.fc-day-past) .fc-daygrid-day-number,
+        .calendar-active-mode-red .fc-daygrid-day.has-event:not(.clicked-0)[class*="clicked-"]:not(.fc-day-past) .fc-daygrid-day-number {
+            color: #9f1239 !important;
+            font-weight: 700 !important;
+        }
+
         .app-body { flex: 1; display: flex; height: calc(100vh - 110px); position: relative; overflow: hidden; }
 
-        .side-panel {
-            width: 280px;
-            background-color: #ffffff;
-            border-right: 4px double #1037e572;
-            display: flex;
-            flex-direction: column;
-            flex-shrink: 0;
-            z-index: 10;
-        }
-
+        .side-panel { width: 280px; background-color: #ffffff; border-right: 4px double #1037e572; display: flex; flex-direction: column; flex-shrink: 0; height: 100%; }
         .nav-btn {
-            flex: 1;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            text-decoration: none;
-            font-size: 1.35rem;
-            font-weight: 700;
-            color: #ffffff;
-            transition: all 0.2s ease-in-out;
-            box-sizing: border-box;
-            position: relative;
-            border: none;
-            cursor: pointer;
+            flex: 1; display: flex; align-items: center; justify-content: center; text-decoration: none;
+            font-size: 1.35rem; font-weight: 700; color: #ffffff; transition: all 0.2s ease-in-out;
+            box-sizing: border-box; position: relative; border: none; cursor: pointer;
         }
-
         .nav-btn.is-active::before {
-            content: '';
-            position: absolute;
-            top: 16px;
-            left: 16px;
-            width: 16px;
-            height: 16px;
-            background-color: #2563eb;
-            border-radius: 50%;
-            border: 2px solid #ffffff;
-            box-shadow: 0 0 10px rgba(37, 99, 235, 0.8);
-            z-index: 20;
+            content: ''; position: absolute; top: 12px; left: 12px; width: 14px; height: 14px;
+            background-color: #2563eb; border-radius: 50%; border: 2px solid #ffffff; box-shadow: 0 0 8px rgba(37, 99, 235, 0.6); z-index: 10;
         }
-
         .side-panel .nav-btn:hover { border: 8px double #ffffff !important; z-index: 2; }
         .btn-icon { width: 280px; height: 200px; object-fit: contain; }
         .nav-btn-org { background-color: #fea768; border-bottom: 2px solid #ea580c; }
         .nav-btn-activity { background-color: #dc2626; border-bottom: 2px solid #991b1b; }
         .nav-btn-user { background-color: #881337; }
 
-        main {
-            flex: 1;
-            padding: 2rem;
-            background-color: #d6e6f9;
+        main { flex: 1; padding: 1.5rem; background-color: #d6e6f9; height: 100%; overflow: hidden; display: flex; flex-direction: column; }
+
+        .calendar-container {
+            max-width: 1000px;
+            width: 100%;
             height: 100%;
-            overflow: hidden;
-            position: relative;
-        }
-
-        .content-wrapper { max-width: 1000px; margin: 0 auto; height: 100%; display: flex; flex-direction: column; }
-        .filter-controls { 
-            display: flex; 
-            gap: 1rem; 
-            margin-bottom: 1.25rem; 
-            align-items: center; 
-            flex-shrink: 0; 
-            width: 100%; 
-        }
-        .search-box {
-            flex: 1; 
-            padding: 0.75rem 1rem;
-            border: 1px solid #cbd5e1;
-            border-radius: 8px;
-            font-size: 0.95rem;
-            background-color: #ffffff;
-            outline: none;
-            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.03);
-            transition: border-color 0.2s;
-        }
-        .search-box:focus { border-color: #2563eb; box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.15); }
-        
-        .filter-managed-btn {
-            background-color: #ffffff;
-            color: #334155;
-            border: 1px solid #cbd5e1;
-            padding: 0.75rem 1rem;
-            border-radius: 8px;
-            font-size: 0.9rem;
-            font-weight: 700;
-            cursor: pointer;
-            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.03);
-            transition: all 0.2s ease;
-            user-select: none;
-        }
-        .filter-managed-btn:hover { background-color: #f8fafc; border-color: #94a3b8; }
-        .filter-managed-btn.filter-active {
-            background-color: #0284c7;
-            color: #ffffff;
-            border-color: #0369a1;
-        }
-
-        .class-select {
-            padding: 0.75rem 1rem;
-            border: 1px solid #cbd5e1;
-            border-radius: 8px;
-            font-size: 0.95rem;
-            background-color: #ffffff;
-            outline: none;
-            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.03);
-            cursor: pointer;
-            min-width: 180px;
-        }
-
-        .user-container {
+            margin: 0;
+            padding: 16px;
             background: #ffffff;
             border-radius: 12px;
-            padding: 0;
             box-shadow: 0 4px 12px rgba(37, 99, 235, 0.08);
             border: 1px solid #dbeafe;
-            height: calc(100vh - 270px);
-            overflow-y: auto;
-            box-sizing: border-box;
-            position: relative;
-        }
-
-        .table-header {
-            position: sticky;
-            top: 0;
-            z-index: 10;
-            display: grid;
-            grid-template-columns: 1fr 2fr 1fr 1fr;
-            gap: 1rem;
-            padding: 0.75rem 1.25rem;
-            background-color: #f1f5f9;
-            border-bottom: 2px solid #cbd5e1;
-            font-size: 0.75rem;
-            font-weight: 700;
-            color: #475569;
-            text-transform: uppercase;
-        }
-
-        .table-header div {
-            cursor: pointer;
-            user-select: none;
-            display: flex;
-            align-items: center;
-            gap: 4px;
-            transition: color 0.2s;
-        }
-        .table-header div:hover { color: #2563eb; }
-        .table-header div.sorted-asc::after { content: " ▲"; font-size: 0.65rem; color: #2563eb; }
-        .table-header div.sorted-desc::after { content: " ▼"; font-size: 0.65rem; color: #2563eb; }
-
-        .user-row {
-            display: grid;
-            grid-template-columns: 1fr 2fr 1fr 1fr;
-            align-items: center;
-            gap: 1rem;
-            padding: 0.5rem 1.25rem;
-            border: 1px solid transparent;
-            border-bottom: 1px solid #f1f5f9;
-            transition: background-color 0.15s ease;
-            cursor: pointer;
-        }
-        .user-row:hover { background-color: #eff6ff; border: 1px solid #000000; }
-        .user-field-value { font-size: 0.9rem; font-weight: 600; color: #0f172a; }
-
-        .hover-tooltip {
-            position: fixed;
-            display: none;
-            pointer-events: none;
-            background-color: #ffffff;
-            border: 2px solid #2563eb;
-            border-radius: 10px;
-            padding: 16px 20px;
-            font-size: 1rem;
-            color: #0f172a;
-            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
-            z-index: 100000000000000;
-            min-width: 320px;
-            line-height: 1.5;
-        }
-
-        .sliding-panel {
-            position: absolute;
-            top: 0;
-            right: 0;
-            width: 100%;
-            height: 100%;
-            background-color: #ffffff;
-            box-shadow: -4px 0 16px rgba(0, 0, 0, 0.15);
-            transform: translateX(100%);
-            transition: transform 0.4s ease-in-out;
-            z-index: 2500;
             display: flex;
             flex-direction: column;
-            padding: 1.5rem 2rem;
             box-sizing: border-box;
-            overflow-y: auto;
-        }
-        .sliding-panel.is-open { transform: translateX(0); }
-
-        .close-arrow-btn {
-            position: absolute;
-            top: 16px;
-            left: 16px;
-            background: none;
-            border: none;
-            cursor: pointer;
-            padding: 4px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            transition: transform 0.2s ease;
-            z-index: 40;
-        }
-        .close-arrow-btn:hover { transform: scale(1.15); }
-        .arrow-img { width: 32px; height: 32px; object-fit: contain; }
-
-        .panel-content { width: 100%; display: flex; flex-direction: column; margin-top: 2rem; gap: 1.5rem; }
-        
-        .section-title {
-            font-size: 1.1rem;
-            font-weight: 800;
-            color: #0f172a;
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
-            margin-bottom: 0.75rem;
-            border-bottom: 2px solid #e2e8f0;
-            padding-bottom: 4px;
+            overflow: hidden;
         }
 
-        .panel-upper-half { display: flex; flex-direction: column; gap: 1rem; }
-        .panel-lower-half { display: flex; flex-direction: column; gap: 1rem; background-color: #f8fafc; padding: 1.25rem; border-radius: 10px; border: 1px solid #e2e8f0; }
-
-        .form-row-1 { display: grid; grid-template-columns: 0.8fr 2.2fr 1.2fr 0.8fr auto; gap: 1rem; align-items: center; }
-        .form-row-2 { display: grid; grid-template-columns: 1fr 1.3fr 1.3fr 1fr; gap: 1rem; align-items: flex-start; }
-
-        .field-group { display: flex; flex-direction: column; gap: 0.25rem; }
-        .field-label { font-size: 0.72rem; font-weight: 700; color: #64748b; text-transform: uppercase; }
-
-        .input-box {
-            padding: 0.45rem 0.65rem;
-            border: 1px solid #cbd5e1;
-            border-radius: 6px;
-            font-size: 0.88rem;
-            outline: none;
-            background-color: #ffffff;
-            color: #0f172a;
-            width: 100%;
+        #ecams-calendar {
+            flex: 1;
+            min-height: 0;
         }
-        .input-box:focus { border-color: #2563eb; }
-        .input-box-large { font-size: 1.15rem; font-weight: 800; color: #0f172a; }
-        .input-box:disabled { background-color: #f1f5f9; color: #94a3b8; cursor: not-allowed; }
 
-        .btn-delete-user {
-            background-color: #ef4444;
-            color: #ffffff;
-            border: none;
-            font-size: 0.85rem;
-            font-weight: 700;
-            padding: 0.5rem 1rem;
-            border-radius: 6px;
-            cursor: pointer;
-            transition: background-color 0.2s ease;
-            white-space: nowrap;
+        :root {
+            --fc-border-color: #e2e8f0; --fc-button-bg-color: #2563eb; --fc-button-border-color: #2563eb;
+            --fc-button-hover-bg-color: #1d4ed8; --fc-button-active-bg-color: #1e40af; --fc-today-bg-color: #eff6ff;
+            --fc-page-bg-color: #ffffff; --fc-neutral-bg-color: #f8fafc;
         }
-        .btn-delete-user:hover { background-color: #dc2626; }
-        .btn-delete-user:disabled { background-color: #cbd5e1; cursor: not-allowed; }
 
-        .dropdown-checklist-container { position: relative; display: inline-block; width: 60%; max-width: 350px; }
-        .checklist-anchor {
-            padding: 0.35rem 0.55rem;
-            border: 1px solid #cbd5e1;
-            border-radius: 6px;
-            font-size: 0.8rem;
-            background: #ffffff;
-            cursor: pointer;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
+        .fc .fc-toolbar-title { font-size: 1.25rem; font-weight: 700; color: #0f172a; }
+        .fc .fc-toolbar { margin-bottom: 0.5rem !important; }
+
+        .activity-details-panel {
+            position: fixed; top: 130px; right: 20px; width: clamp(220px, 25vw, 380px); min-width: 220px;
+            max-width: calc(100vw - 30px); height: auto; min-height: 320px; max-height: calc(100vh - 160px);
+            background-color: #ffffff; border: 1px solid #cbd5e1; box-shadow: 0 10px 25px rgba(0, 0, 0, 0.15);
+            border-radius: 8px; z-index: 1000; display: none; flex-direction: column; resize: both; overflow: hidden; box-sizing: border-box;
         }
-        .checklist-dropdown {
-            display: none;
-            position: absolute;
-            top: 100%;
-            left: 0;
-            width: 100%;
-            background: #ffffff;
-            border: 1px solid #cbd5e1;
-            border-radius: 6px;
-            max-height: 120px;
-            overflow-y: auto;
-            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
-            z-index: 100;
-            padding: 4px;
+        .activity-details-panel.active { display: flex; }
+
+        .resize-handle-bl { position: absolute; left: 0; bottom: 0; width: 16px; height: 16px; cursor: nesw-resize; z-index: 1100; }
+        .resize-handle-bl::after {
+            content: ''; position: absolute; left: 3px; bottom: 3px; width: 6px; height: 6px;
+            border-left: 2px solid #94a3b8; border-bottom: 2px solid #94a3b8;
         }
-        .checklist-dropdown.visible { display: block; }
-        .checklist-item { display: flex; align-items: center; gap: 8px; padding: 3px 6px; font-size: 0.78rem; color: #1e293b; cursor: pointer; }
-        .checklist-item:hover { background-color: #f1f5f9; }
 
-        .panel-actions-row { display: flex; justify-content: center; align-items: center; gap: 1rem; margin-top: 0.5rem; }
-        .btn-modify {
-            background-color: #94a3b8;
-            color: #ffffff;
-            font-size: 0.95rem;
-            font-weight: 700;
-            padding: 0.5rem 2.5rem;
-            border: none;
-            border-radius: 6px;
-            cursor: not-allowed;
-            transition: all 0.2s ease;
+        .panel-header { padding: 0.75rem 1rem; background-color: #f8fafc; border-bottom: 2px solid #e2e8f0; display: flex; justify-content: space-between; align-items: center; cursor: move; user-select: none; }
+        .header-tabs { display: flex; align-items: center; gap: 8px; font-size: 0.95rem; font-weight: 700; }
+        .tab-btn { background: none; border: none; font-size: 0.9rem; font-weight: 700; color: #64748b; cursor: pointer; padding: 4px 8px; border-radius: 4px; transition: all 0.2s; }
+        .tab-btn.active { color: #2563eb; background-color: #eff6ff; }
+        .tab-btn:hover:not(.active) { color: #1e293b; }
+        .tab-separator { color: #cbd5e1; font-weight: 400; }
+        .close-btn { background: none; border: none; font-size: 1.5rem; color: #64748b; cursor: pointer; line-height: 1; }
+        .close-btn:hover { color: #0f172a; }
+
+        .panel-body-content { padding: 1.25rem; flex: 1; overflow-y: auto; display: flex; flex-direction: column; position: relative; }
+
+        .btn-return-back {
+            display: inline-flex; align-items: center; gap: 4px; background-color: #f1f5f9; color: #334155;
+            border: 1px solid #cbd5e1; border-radius: 4px; padding: 0.35rem 0.65rem; font-size: 0.8rem;
+            font-weight: 700; cursor: pointer; margin-bottom: 0.85rem; align-self: flex-start; transition: background-color 0.15s ease;
         }
-        .btn-modify.is-active { background-color: #2563eb; cursor: pointer; }
-        .btn-modify.is-active:hover { background-color: #1d4ed8; }
+        .btn-return-back:hover { background-color: #e2e8f0; color: #0f172a; }
 
-        .report-checkbox-group { display: flex; flex-direction: column; gap: 0.85rem; }
-        .report-item-block { display: flex; flex-direction: column; gap: 4px; }
-        .report-option-row { display: flex; align-items: center; gap: 12px; font-size: 0.9rem; font-weight: 600; color: #1e293b; cursor: pointer; }
-        .report-option-row input[type="checkbox"] { width: 18px; height: 18px; cursor: pointer; accent-color: #0f172a; flex-shrink: 0; }
-        
-        .org-select-inline { display: none; position: relative; width: 220px; flex-shrink: 0; }
-        .org-select-inline.visible { display: inline-block; }
+        .activity-cards-list { display: flex; flex-direction: column; gap: 0.75rem; margin-top: 0.25rem; }
+        .fc-v-event, .fc-h-event, .fc-daygrid-event { background-color: #76787e !important; border-radius: 4px; }
 
-        .date-range-container { display: none; align-items: center; gap: 8px; margin-left: 28px; margin-top: 4px; }
-        .date-range-container.visible { display: flex; }
-        .date-input { padding: 4px 8px; border: 1px solid #cbd5e1; border-radius: 4px; font-size: 0.85rem; background: #ffffff; }
-
-        .btn-export-large {
-            background-color: #0f172a;
-            color: #ffffff;
-            font-size: 1rem;
-            font-weight: 800;
-            padding: 0.75rem 2rem;
-            border: none;
-            border-radius: 8px;
-            cursor: pointer;
-            transition: background-color 0.2s ease, transform 0.1s ease;
-            text-align: center;
-            display: block;
-            width: 100%;
-            max-width: 320px;
-            margin: 0.5rem auto 0 auto;
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
+        .activity-card {
+            background-color: #ffffff; border: 1.5px solid #e2e8f0; border-left: 5px solid #888c96;
+            border-radius: 6px; padding: 0.85rem 1rem; cursor: pointer; transition: all 0.2s ease; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
         }
-        .btn-export-large:hover { background-color: #334155; transform: translateY(-1px); }
+        .activity-card:hover {
+            border-color: #93c5fd; border-left-color: #1d4ed8; background-color: #f8fafc;
+            transform: translateY(-1px); box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.08);
+        }
+        .activity-card-title { font-size: 0.95rem; font-weight: 700; color: #1e293b; }
+        .activity-card-sub { font-size: 0.75rem; color: #64748b; margin-top: 4px; }
+
+        .field-group { margin-bottom: 0.85rem; display: flex; flex-direction: column; gap: 0.35rem; }
+        .field-group label { font-size: 0.8rem; font-weight: 700; color: #475569; text-transform: uppercase; letter-spacing: 0.04em; }
+        .field-group input, .field-group select {
+            width: 100%; padding: 0.6rem 0.75rem; border: 1px solid #cbd5e1; border-radius: 6px;
+            font-size: 0.95rem; color: #0f172a; outline: none; transition: border-color 0.2s; background-color: #ffffff;
+        }
+        .field-group input:focus, .field-group select:focus { border-color: #2563eb; box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.15); }
+        .field-group input[readonly], .field-group input:disabled, .field-group select:disabled { background-color: #f1f5f9; color: #64748b; cursor: not-allowed; }
+
+        .panel-footer { margin-top: auto; padding-top: 1rem; display: flex; flex-direction: column; gap: 0.6rem; }
+
+        .btn-action {
+            width: 100%; padding: 0.75rem; background-color: #2563eb; color: #ffffff;
+            font-size: 1rem; font-weight: 700; border: none; border-radius: 6px; cursor: pointer; transition: all 0.2s ease;
+        }
+        .btn-action:hover:not(:disabled) { background-color: #1d4ed8; }
+        .btn-action:disabled { background-color: #cbd5e1 !important; color: #94a3b8 !important; cursor: not-allowed !important; opacity: 0.8; }
+
+        .btn-create-mode { background-color: #16a34a !important; }
+        .btn-create-mode:hover:not(:disabled) { background-color: #15803d !important; }
+
+        .btn-delete {
+            width: 100%; padding: 0.75rem; background-color: #dc2626; color: #ffffff;
+            font-size: 1rem; font-weight: 700; border: none; border-radius: 6px; cursor: pointer; display: none; transition: background-color 0.2s;
+        }
+        .btn-delete:hover { background-color: #b91c1c; }
 
         .modal-overlay {
-            display: none;
-            position: fixed;
-            top: 0; left: 0; width: 100%; height: 100%;
-            background-color: rgba(15, 23, 42, 0.5);
-            backdrop-filter: blur(2px);
-            z-index: 3000;
-            align-items: center;
-            justify-content: center;
+            position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background-color: rgba(15, 23, 42, 0.5);
+            z-index: 2000; display: flex; align-items: center; justify-content: center; opacity: 0; pointer-events: none; transition: opacity 0.2s ease;
         }
-        .modal-overlay.is-visible { display: flex; }
-        
-        .confirm-modal {
-            background: #ffffff;
-            border-radius: 12px;
-            width: 420px;
-            max-width: 90%;
-            padding: 1.5rem;
-            box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1);
-            border: 1px solid #e2e8f0;
-        }
-
-        .modal-title { font-size: 1.15rem; font-weight: 800; color: #0f172a; margin-bottom: 0.5rem; }
-        .modal-message { font-size: 0.95rem; color: #475569; margin-bottom: 1rem; line-height: 1.4; }
-        .modal-actions { display: flex; justify-content: flex-end; gap: 0.75rem; flex-shrink: 0; }
-        .btn-modal-cancel { padding: 0.5rem 1.25rem; border-radius: 6px; border: 1px solid #cbd5e1; background-color: #ffffff; color: #475569; font-size: 0.88rem; font-weight: 600; cursor: pointer; }
-        .btn-modal-cancel:hover { background-color: #f8fafc; }
-        .btn-modal-confirm { padding: 0.5rem 1.25rem; border-radius: 6px; border: none; background-color: #2563eb; color: #ffffff; font-size: 0.88rem; font-weight: 700; cursor: pointer; }
-        .btn-modal-confirm:hover { background-color: #1d4ed8; }
+        .modal-overlay.active { opacity: 1; pointer-events: auto; }
+        .modal-box { background-color: #ffffff; width: 90%; max-width: 420px; border-radius: 10px; padding: 1.5rem; box-shadow: 0 10px 25px rgba(0, 0, 0, 0.2); text-align: center; }
+        .modal-box h3 { font-size: 1.15rem; color: #0f172a; margin-bottom: 0.5rem; font-weight: 700; }
+        .modal-box p { font-size: 0.9rem; color: #64748b; margin-bottom: 1.5rem; }
+        .modal-actions { display: flex; gap: 0.75rem; justify-content: center; }
+        .btn-modal-cancel { flex: 1; padding: 0.65rem; background-color: #808080; color: #ffffff; border: none; border-radius: 6px; font-weight: 600; cursor: pointer; }
+        .btn-modal-confirm { flex: 1; padding: 0.65rem; background-color: #2563eb; color: #ffffff; border: none; border-radius: 6px; font-weight: 600; cursor: pointer; }
+        .btn-modal-confirm.delete-mode { background-color: #dc2626 !important; }
     </style>
 </head>
 <body>
-
-    <div id="hoverTooltip" class="hover-tooltip"></div>
 
     <header>
         <div class="header-content">
@@ -1105,7 +450,7 @@ if ($userRes) {
                 <div class="header-titles">
                     <h1>Extracurricular Activity Management System</h1>
                     <div class="sub-header-row">
-                        <p>Teacher User Profile Management</p>
+                        <p>Teacher Activity Management Dashboard</p>
                         <a href="logout.php" class="btn-logout">Logout</a>
                     </div>
                 </div>
@@ -1122,860 +467,632 @@ if ($userRes) {
             <a href="t-org.php" class="nav-btn nav-btn-org">
                 <img src="org.png" alt="Organization" class="btn-icon">
             </a>
-            <a href="teacher.php" class="nav-btn nav-btn-activity">
+            <a href="t-activity.php" class="nav-btn nav-btn-activity is-active" id="navBtnActivity">
                 <img src="act.png" alt="Activity" class="btn-icon">
             </a>
-            <a href="t-user.php" class="nav-btn nav-btn-user is-active">
+            <a href="t-user.php" class="nav-btn nav-btn-user">
                 <img src="use.png" alt="User" class="btn-icon">
             </a>
         </aside>
 
         <main>
-            <div class="content-wrapper">
-                <div class="filter-controls">
-                    <input type="text" id="searchInput" class="search-box" placeholder="Search by name or UID...">
-                    <button type="button" class="filter-managed-btn" id="filterManagedBtn">Only show students in my organisations</button>
-                    
-                    <select id="classFilter" class="class-select">
-                        <option value="ALL">Display All Classes</option>
-                        <?php foreach ($classes as $cls): ?>
-                            <option value="<?= htmlspecialchars($cls) ?>">Class <?= htmlspecialchars($cls) ?></option>
-                        <?php endforeach; ?>
-                    </select>
-                </div>
-
-                <div class="user-container" id="userContainer">
-                    <div class="table-header">
-                        <div data-sort="uid" class="sorted-asc">UID</div>
-                        <div data-sort="name">NAME</div>
-                        <div data-sort="class">CLASS</div>
-                        <div data-sort="cid">CID</div>
-                    </div>
-
-                    <div id="rowsWrapper">
-                        <?php if (!empty($users)): ?>
-                            <?php foreach ($users as $u): ?>
-                                <div class="user-row" 
-                                     data-uid="<?= htmlspecialchars($u['uid'] ?? '') ?>" 
-                                     data-name="<?= htmlspecialchars($u['name'] ?? '') ?>" 
-                                     data-class="<?= htmlspecialchars($u['class'] ?? '') ?>"
-                                     data-cid="<?= htmlspecialchars($u['cid'] ?? '') ?>"
-                                     data-email="<?= htmlspecialchars($u['email'] ?? '') ?>"
-                                     data-role="<?= htmlspecialchars($u['role'] ?? '') ?>"
-                                     data-is-managed="<?= $u['is_in_my_orgs'] ? 'true' : 'false' ?>"
-                                     data-orgs='<?= htmlspecialchars(json_encode($u['organisations'] ?? []), ENT_QUOTES, 'UTF-8') ?>'>
-                                    
-                                    <div class="user-field-value col-uid"><?= htmlspecialchars($u['uid'] ?? 'N/A') ?></div>
-                                    <div class="user-field-value col-name"><?= htmlspecialchars($u['name'] ?? 'N/A') ?></div>
-                                    <div class="user-field-value col-class"><?= htmlspecialchars($u['class'] ?? 'N/A') ?></div>
-                                    <div class="user-field-value col-cid"><?= htmlspecialchars($u['cid'] ?? 'N/A') ?></div>
-                                </div>
-                            <?php endforeach; ?>
-                        <?php endif; ?>
-                    </div>
-                </div>
+            <div class="calendar-container">
+                <div id="ecams-calendar"></div>
             </div>
+        </main>
 
-            <!-- Sliding Panel -->
-            <div class="sliding-panel" id="detailPanel">
-                <button class="close-arrow-btn" id="closePanelBtn" title="Close Panel">
-                    <img src="arrow.png" alt="Back Arrow" class="arrow-img">
-                </button>
+        <div class="activity-details-panel" id="activityPanel">
+            <div class="resize-handle-bl" id="resizeHandleBL"></div>
 
-                <div class="panel-content">
-                    <div class="panel-upper-half">
-                        <div class="section-title">Modify</div>
-                        
-                        <div class="form-row-1">
-                            <div class="field-group">
-                                <label class="field-label">uId</label>
-                                <input type="text" id="panelUid" class="input-box" readonly>
-                            </div>
-                            <div class="field-group">
-                                <label class="field-label">Name</label>
-                                <input type="text" id="panelName" class="input-box input-box-large">
-                            </div>
-                            <div class="field-group">
-                                <label class="field-label">Class</label>
-                                <input type="text" id="panelClass" class="input-box input-box-large">
-                            </div>
-                            <div class="field-group">
-                                <label class="field-label">cid</label>
-                                <input type="text" id="panelCid" class="input-box">
-                            </div>
-                        </div>
+            <div class="panel-header" id="panelHeader">
+                <div class="header-tabs">
+                    <button type="button" class="tab-btn" id="tabExisting">Existing Activities</button>
+                    <span class="tab-separator" id="tabSeparator">|</span>
+                    <button type="button" class="tab-btn" id="tabCreate">Create new</button>
+                </div>
+                <button class="close-btn" id="closePanelBtn">&times;</button>
+            </div>
+            
+            <div class="panel-body-content">
+                <div id="activitiesListView" style="display: none;">
+                    <div class="activity-cards-list" id="activityCardsContainer"></div>
+                </div>
 
-                        <div class="form-row-2">
-                            <div class="field-group">
-                                <label class="field-label">Email</label>
-                                <input type="email" id="panelEmail" class="input-box">
-                            </div>
-                            
-                            <div class="field-group">
-                                <label class="field-label">New Password (Plaintext)</label>
-                                <input type="password" id="panelPassword" class="input-box" placeholder="Type new password...">
-                            </div>
+                <div id="activityFormView" style="display: none;">
+                    <button type="button" class="btn-return-back" id="returnBackBtn" style="display: none;">&larr; Back</button>
 
-                            <div class="field-group">
-                                <label class="field-label">Live Hashed Password (PHP Default)</label>
-                                <input type="text" id="panelHashedPassword" class="input-box" readonly placeholder="Hashed output appears here...">
-                            </div>
-
-                            <div class="field-group">
-                                <label class="field-label">Role</label>
-                                <input type="text" id="panelRole" class="input-box">
-                            </div>
+                    <form id="activityForm">
+                        <div class="field-group">
+                            <label for="field_aid">Activity ID (aid)</label>
+                            <input type="text" id="field_aid" name="aid" placeholder="Auto-assigned" readonly>
                         </div>
 
                         <div class="field-group">
-                            <label class="field-label" id="panelOrgLabel">Organisations Enrolled:</label>
-                            <div class="dropdown-checklist-container">
-                                <div class="checklist-anchor" id="checklistAnchor">
-                                    <span id="checklistLabel">Select Organisations...</span>
-                                    <span>▼</span>
-                                </div>
-                                <div class="checklist-dropdown" id="checklistDropdown">
-                                    <?php foreach ($allOrganisations as $org): ?>
-                                        <label class="checklist-item">
-                                            <input type="checkbox" class="org-checkbox" value="<?= htmlspecialchars($org['oid']) ?>">
-                                            <span><?= htmlspecialchars($org['oid']) ?> - <?= htmlspecialchars($org['oname']) ?></span>
-                                        </label>
-                                    <?php endforeach; ?>
-                                </div>
-                            </div>
+                            <label for="field_oid">Organisation</label>
+                            <select id="field_oid" name="oid">
+                                <option value="">Select Organisation</option>
+                                <?php foreach ($organizations as $org): ?>
+                                    <option value="<?= htmlspecialchars($org['oid']) ?>">
+                                        <?= htmlspecialchars($org['oid']) ?>. <?= htmlspecialchars($org['oname']) ?>
+                                    </option>
+                                <?php endforeach; ?>
+                            </select>
                         </div>
 
-                        <div class="panel-actions-row">
-                            <button type="button" class="btn-modify" id="btnModify" disabled>Modify</button>
-                            <button type="button" class="btn-delete-user" id="btnDeleteUser">Delete User</button>
+                        <div class="field-group">
+                            <label for="field_aname">Activity Name (aname)</label>
+                            <input type="text" id="field_aname" name="aname" placeholder="e.g. Science Fair">
                         </div>
-                    </div>
 
-                    <div class="panel-lower-half" id="exportSectionContainer" style="display:none;">
-                        <div class="section-title">Export Reports</div>
-                        
-                        <form id="exportForm" method="POST" action="">
-                            <input type="hidden" name="action" value="export_pdf">
-                            <input type="hidden" name="export_uid" id="formExportUid">
+                        <div class="field-group">
+                            <label for="field_date">Date (date)</label>
+                            <input type="date" id="field_date" name="date">
+                        </div>
 
-                            <div class="report-checkbox-group">
-                                <div class="report-item-block">
-                                    <div class="report-option-row">
-                                        <input type="checkbox" id="chkAttendance" name="opt_attendance" value="1">
-                                        <span>Attendance Record</span>
-                                        <div class="org-select-inline" id="attOrgWrapper">
-                                            <div class="checklist-anchor" id="attChecklistAnchor">
-                                                <span id="attChecklistLabel">Select Orgs...</span>
-                                                <span>▼</span>
-                                            </div>
-                                            <div class="checklist-dropdown" id="attChecklistDropdown"></div>
-                                        </div>
-                                    </div>
-                                    <div class="date-range-container" id="dateRangeWrapper">
-                                        <span class="field-label">From:</span>
-                                        <input type="date" id="exportStartDate" name="export_start" class="date-input" value="2026-09-01">
-                                        <span class="field-label">To:</span>
-                                        <input type="date" id="exportEndDate" name="export_end" class="date-input">
-                                    </div>
-                                </div>
+                        <div class="field-group">
+                            <label for="field_room">Room (room)</label>
+                            <input type="number" id="field_room" name="room" placeholder="e.g. 302">
+                        </div>
 
-                                <div class="report-item-block">
-                                    <div class="report-option-row">
-                                        <input type="checkbox" id="chkParticipation" name="opt_participation" value="1">
-                                        <span>Average Participation Rating</span>
-                                        <div class="org-select-inline" id="partOrgWrapper">
-                                            <div class="checklist-anchor" id="partChecklistAnchor">
-                                                <span id="partChecklistLabel">Select Orgs...</span>
-                                                <span>▼</span>
-                                            </div>
-                                            <div class="checklist-dropdown" id="partChecklistDropdown"></div>
-                                        </div>
-                                    </div>
-                                </div>
+                        <div class="field-group">
+                            <label for="field_timeslot">Time Slot</label>
+                            <select id="field_timeslot" name="timeslot">
+                                <option value="Lunch Recess">Lunch Recess</option>
+                                <option value="After School">After School</option>
+                            </select>
+                        </div>
 
-                                <div class="report-item-block">
-                                    <div class="report-option-row">
-                                        <input type="checkbox" id="chkSatisfactory" name="opt_satisfactory" value="1">
-                                        <span>Average Satisfactory Rating</span>
-                                        <div class="org-select-inline" id="satOrgWrapper">
-                                            <div class="checklist-anchor" id="satChecklistAnchor">
-                                                <span id="satChecklistLabel">Select Orgs...</span>
-                                                <span>▼</span>
-                                            </div>
-                                            <div class="checklist-dropdown" id="satChecklistDropdown"></div>
-                                        </div>
-                                    </div>
-                                </div>
-
-                                <label class="report-option-row" style="margin-top: 6px; border-top: 1px dashed #cbd5e1; padding-top: 8px;">
-                                    <input type="checkbox" id="chkSelectAll">
-                                    <span style="font-weight: 800; color: #2563eb;">Select All Options</span>
-                                </label>
-                            </div>
-
-                            <button type="button" class="btn-export-large" id="btnExportPdf">Export PDF</button>
-                        </form>
-                    </div>
+                        <div class="panel-footer">
+                            <button type="button" class="btn-action" id="actionBtn">Modify</button>
+                            <button type="button" class="btn-delete" id="deleteBtn">Delete Activity</button>
+                        </div>
+                    </form>
                 </div>
             </div>
-        </main>
+        </div>
     </div>
 
     <div class="modal-overlay" id="confirmModal">
-        <div class="confirm-modal">
-            <div class="modal-title" id="modalTitle">Confirm Action</div>
-            <div class="modal-message" id="modalMessage">Are you sure you want to proceed?</div>
+        <div class="modal-box">
+            <h3 id="modalHeading">Confirm Action</h3>
+            <p id="modalDescription">Are you sure you want to proceed?</p>
             <div class="modal-actions">
-                <button type="button" class="btn-modal-cancel" id="btnModalCancel">Cancel</button>
-                <button type="button" class="btn-modal-confirm" id="btnModalConfirm">Confirm</button>
+                <button class="btn-modal-cancel" id="cancelModalBtn">Cancel</button>
+                <button class="btn-modal-confirm" id="confirmModalBtn">Confirm</button>
             </div>
         </div>
     </div>
 
     <script>
-        const managedTeacherOrgs = <?php echo json_encode($managedOrgsList); ?>;
-
         function updateClock() {
             const now = new Date();
-            document.getElementById('live-time').textContent = now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true });
-            document.getElementById('live-date').textContent = now.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
+            const timeString = now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true });
+            const dateString = now.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
+            document.getElementById('live-time').textContent = timeString;
+            document.getElementById('live-date').textContent = dateString;
         }
         updateClock();
         setInterval(updateClock, 1000);
 
-        let userRows = Array.from(document.querySelectorAll('.user-row'));
-        const rowsWrapper = document.getElementById('rowsWrapper');
-        const tooltip = document.getElementById('hoverTooltip');
-        const searchInput = document.getElementById('searchInput');
-        const classFilter = document.getElementById('classFilter');
-        const filterManagedBtn = document.getElementById('filterManagedBtn');
-        let isFilterManagedActive = false;
-        
-        const detailPanel = document.getElementById('detailPanel');
-        const closePanelBtn = document.getElementById('closePanelBtn');
-        const btnDeleteUser = document.getElementById('btnDeleteUser');
-        const btnModify = document.getElementById('btnModify');
+        document.addEventListener('DOMContentLoaded', function() {
+            var calendarEl = document.getElementById('ecams-calendar');
+            var dbEvents = <?php echo json_encode($events); ?>;
 
-        const panelUid = document.getElementById('panelUid');
-        const panelName = document.getElementById('panelName');
-        const panelClass = document.getElementById('panelClass');
-        const panelCid = document.getElementById('panelCid');
-        const panelEmail = document.getElementById('panelEmail');
-        const panelPassword = document.getElementById('panelPassword');
-        const panelHashedPassword = document.getElementById('panelHashedPassword');
-        const panelRole = document.getElementById('panelRole');
-        const panelOrgLabel = document.getElementById('panelOrgLabel');
-        const exportSectionContainer = document.getElementById('exportSectionContainer');
+            var currentMode = 'modify';
+            var initialActivityData = {};
+            var activeEventId = null;
+            var currentSelectedDate = null;
+            var currentDayActivities = [];
 
-        const checklistAnchor = document.getElementById('checklistAnchor');
-        const checklistDropdown = document.getElementById('checklistDropdown');
-        const checklistLabel = document.getElementById('checklistLabel');
-        const orgCheckboxes = document.querySelectorAll('.org-checkbox');
+            var panel = document.getElementById('activityPanel');
+            var tabExisting = document.getElementById('tabExisting');
+            var tabCreate = document.getElementById('tabCreate');
+            var tabSeparator = document.getElementById('tabSeparator');
 
-        const confirmModal = document.getElementById('confirmModal');
-        const modalTitle = document.getElementById('modalTitle');
-        const modalMessage = document.getElementById('modalMessage');
-        const btnModalCancel = document.getElementById('btnModalCancel');
-        const btnModalConfirm = document.getElementById('btnModalConfirm');
+            var activitiesListView = document.getElementById('activitiesListView');
+            var activityCardsContainer = document.getElementById('activityCardsContainer');
+            var activityFormView = document.getElementById('activityFormView');
+            var returnBackBtn = document.getElementById('returnBackBtn');
 
-        const chkAttendance = document.getElementById('chkAttendance');
-        const chkParticipation = document.getElementById('chkParticipation');
-        const chkSatisfactory = document.getElementById('chkSatisfactory');
-        const chkSelectAll = document.getElementById('chkSelectAll');
+            var actionBtn = document.getElementById('actionBtn');
+            var deleteBtn = document.getElementById('deleteBtn');
+            var formInputs = document.querySelectorAll('#activityForm input:not([readonly]), #activityForm select');
+            var navBtnActivity = document.getElementById('navBtnActivity');
 
-        const attOrgWrapper = document.getElementById('attOrgWrapper');
-        const partOrgWrapper = document.getElementById('partOrgWrapper');
-        const satOrgWrapper = document.getElementById('satOrgWrapper');
-
-        const attChecklistAnchor = document.getElementById('attChecklistAnchor');
-        const attChecklistDropdown = document.getElementById('attChecklistDropdown');
-        const attChecklistLabel = document.getElementById('attChecklistLabel');
-
-        const partChecklistAnchor = document.getElementById('partChecklistAnchor');
-        const partChecklistDropdown = document.getElementById('partChecklistDropdown');
-        const partChecklistLabel = document.getElementById('partChecklistLabel');
-
-        const satChecklistAnchor = document.getElementById('satChecklistAnchor');
-        const satChecklistDropdown = document.getElementById('satChecklistDropdown');
-        const satChecklistLabel = document.getElementById('satChecklistLabel');
-
-        const dateRangeWrapper = document.getElementById('dateRangeWrapper');
-        const btnExportPdf = document.getElementById('btnExportPdf');
-        const exportStartDate = document.getElementById('exportStartDate');
-        const exportEndDate = document.getElementById('exportEndDate');
-        const exportForm = document.getElementById('exportForm');
-        const formExportUid = document.getElementById('formExportUid');
-
-        let currentSortField = 'uid';
-        let currentSortAsc = true;
-
-        function sortTable(field, asc = true) {
-            currentSortField = field;
-            currentSortAsc = asc;
-
-            userRows.sort((a, b) => {
-                let valA = (a.getAttribute('data-' + field) || '').toLowerCase();
-                let valB = (b.getAttribute('data-' + field) || '').toLowerCase();
-
-                if (field === 'uid' || field === 'cid') {
-                    let numA = parseFloat(valA);
-                    let numB = parseFloat(valB);
-                    if (!isNaN(numA) && !isNaN(numB)) {
-                        return asc ? numA - numB : numB - numA;
-                    }
-                }
-
-                if (valA < valB) return asc ? -1 : 1;
-                if (valA > valB) return asc ? 1 : -1;
-                return 0;
+            navBtnActivity.addEventListener('click', function(e) {
+                e.preventDefault();
+                closeRightPanel();
+                window.location.href = 't-activity.php';
             });
 
-            userRows.forEach(row => rowsWrapper.appendChild(row));
-        }
+            function resetPanelPosition() {
+                panel.style.top = '';
+                panel.style.left = '';
+                panel.style.right = '';
+                panel.style.width = '';
+                panel.style.height = '';
+            }
 
-        document.querySelectorAll('.table-header div').forEach(header => {
-            header.addEventListener('click', () => {
-                const field = header.getAttribute('data-sort');
-                if (currentSortField === field) {
-                    currentSortAsc = !currentSortAsc;
-                } else {
-                    currentSortField = field;
-                    currentSortAsc = true;
-                }
-
-                document.querySelectorAll('.table-header div').forEach(h => {
-                    h.classList.remove('sorted-asc', 'sorted-desc');
+            function unselectCalendarDate() {
+                document.querySelectorAll('.fc-daygrid-day').forEach(function(dayEl) {
+                    dayEl.classList.remove('clicked-0', 'clicked-1', 'clicked-2', 'clicked-3');
                 });
-                header.classList.add(currentSortAsc ? 'sorted-asc' : 'sorted-desc');
-
-                sortTable(currentSortField, currentSortAsc);
-            });
-        });
-
-        sortTable('uid', true);
-
-        chkAttendance.addEventListener('change', () => {
-            if (chkAttendance.checked) {
-                attOrgWrapper.classList.add('visible');
-                dateRangeWrapper.classList.add('visible');
-            } else {
-                attOrgWrapper.classList.remove('visible');
-                dateRangeWrapper.classList.remove('visible');
+                calendarEl.classList.remove('calendar-active-mode-red', 'calendar-active-mode-blue');
+                currentSelectedDate = null;
             }
-        });
 
-        chkParticipation.addEventListener('change', () => {
-            if (chkParticipation.checked) {
-                partOrgWrapper.classList.add('visible');
-            } else {
-                partOrgWrapper.classList.remove('visible');
+            function getTodayDateStr() {
+                const now = new Date();
+                const y = now.getFullYear();
+                const m = String(now.getMonth() + 1).padStart(2, '0');
+                const d = String(now.getDate()).padStart(2, '0');
+                return `${y}-${m}-${d}`;
             }
-        });
 
-        chkSatisfactory.addEventListener('change', () => {
-            if (chkSatisfactory.checked) {
-                satOrgWrapper.classList.add('visible');
-            } else {
-                satOrgWrapper.classList.remove('visible');
-            }
-        });
-
-        chkSelectAll.addEventListener('change', () => {
-            const isChecked = chkSelectAll.checked;
-            chkAttendance.checked = isChecked;
-            chkParticipation.checked = isChecked;
-            chkSatisfactory.checked = isChecked;
-
-            if (isChecked) {
-                attOrgWrapper.classList.add('visible');
-                partOrgWrapper.classList.add('visible');
-                satOrgWrapper.classList.add('visible');
-                dateRangeWrapper.classList.add('visible');
-            } else {
-                attOrgWrapper.classList.remove('visible');
-                partOrgWrapper.classList.remove('visible');
-                satOrgWrapper.classList.remove('visible');
-                dateRangeWrapper.classList.remove('visible');
-            }
-        });
-
-        function setupSubChecklist(anchor, dropdown, labelElem, prefix) {
-            dropdown.innerHTML = `
-                <label class="checklist-item">
-                    <input type="checkbox" class="${prefix}-org-cb" value="ALL" checked>
-                    <span>All Managed Organisations</span>
-                </label>
-            `;
-            managedTeacherOrgs.forEach(o => {
-                dropdown.innerHTML += `
-                    <label class="checklist-item">
-                        <input type="checkbox" class="${prefix}-org-cb" value="${o.oid}">
-                        <span>${o.oid} - ${o.oname}</span>
-                    </label>
-                `;
-            });
-
-            const checkboxes = dropdown.querySelectorAll(`.${prefix}-org-cb`);
-            const allCb = dropdown.querySelector(`input[value="ALL"]`);
-
-            checkboxes.forEach(cb => {
-                cb.addEventListener('change', () => {
-                    updateSubSummary(checkboxes, labelElem, allCb);
+            function markPastDays() {
+                const todayStr = getTodayDateStr();
+                document.querySelectorAll('.fc-daygrid-day').forEach(function(cell) {
+                    const dateStr = cell.getAttribute('data-date');
+                    if (dateStr && dateStr < todayStr) {
+                        cell.classList.add('fc-day-past');
+                    } else if (dateStr) {
+                        cell.classList.remove('fc-day-past');
+                    }
                 });
-            });
-
-            anchor.onclick = (e) => {
-                e.stopPropagation();
-                dropdown.classList.toggle('visible');
-            };
-
-            updateSubSummary(checkboxes, labelElem, allCb);
-        }
-
-        function updateSubSummary(checkboxes, labelElem, allCb) {
-            const checked = Array.from(checkboxes).filter(cb => cb.checked);
-            if (checked.length === 0) {
-                allCb.checked = true;
-                labelElem.textContent = "All Managed Organisations";
-            } else if (allCb.checked && checked.length > 1) {
-                labelElem.textContent = `All Managed Orgs + ${checked.length - 1} Org(s)`;
-            } else if (allCb.checked) {
-                labelElem.textContent = "All Managed Organisations";
-            } else {
-                labelElem.textContent = `${checked.length} Selected`;
             }
-        }
 
-        document.addEventListener('click', (e) => {
-            if (!attChecklistAnchor.contains(e.target) && !attChecklistDropdown.contains(e.target)) attChecklistDropdown.classList.remove('visible');
-            if (!partChecklistAnchor.contains(e.target) && !partChecklistDropdown.contains(e.target)) partChecklistDropdown.classList.remove('visible');
-            if (!satChecklistAnchor.contains(e.target) && !satChecklistDropdown.contains(e.target)) satChecklistDropdown.classList.remove('visible');
-        });
-        
-        let onConfirmCallback = null;
-        let onCancelCallback = null;
-        let activeRow = null;
-        let initialData = {};
+            var calendar = new FullCalendar.Calendar(calendarEl, {
+                initialView: 'dayGridMonth',
+                displayEventTime: false,
+                headerToolbar: { left: 'prev,next today', center: 'title', right: 'dayGridMonth,listYear' },
+                buttonText: { today: 'Today', dayGridMonth: 'Month', listYear: 'List All' },
+                events: dbEvents,
+                handleWindowResize: true,
+                stickyHeaderDates: true,
 
-        panelPassword.addEventListener('input', async () => {
-            const val = panelPassword.value;
-            checkFormChanged();
-            if (!val) {
-                panelHashedPassword.value = '';
-                return;
-            }
-            try {
-                const res = await fetch(window.location.href, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ action: 'hash_preview', password: val })
-                });
-                const data = await res.json();
-                if (data.success) {
-                    panelHashedPassword.value = data.hash;
-                }
-            } catch (err) {
-                console.error('Hash preview failed', err);
-            }
-        });
+                datesSet: function() {
+                    markCellsWithEvents();
+                    markPastDays();
+                },
 
-        function attachRowListeners() {
-            userRows.forEach(row => {
-                row.removeEventListener('mousemove', row._mouseMoveHandler);
-                row.removeEventListener('mouseleave', row._mouseLeaveHandler);
-                row.removeEventListener('click', row._clickHandler);
+                dateClick: function(info) {
+                    var clickedCell = info.dayEl;
+                    var clickedDateStr = info.dateStr;
+                    var todayStr = getTodayDateStr();
+                    var isPast = clickedDateStr < todayStr;
 
-                row._mouseMoveHandler = (e) => {
-                    const name = row.getAttribute('data-name') || 'N/A';
-                    const cls = row.getAttribute('data-class') || 'N/A';
-                    const cid = row.getAttribute('data-cid') || 'N/A';
-                    const role = (row.getAttribute('data-role') || 'student').toLowerCase();
-                    
-                    let orgs = [];
-                    try { orgs = JSON.parse(row.getAttribute('data-orgs') || "[]"); } catch (err) { orgs = []; }
-                    
-                    const orgTitle = role === 'student' ? 'Organisations Enrolled' : 'Organisations Managed';
-                    
-                    let orgListHTML = '';
-                    if (orgs.length > 0) {
-                        orgListHTML = orgs.map((o, index) => `${index + 1}. ${o.oname}`).join('<br>');
-                    } else {
-                        orgListHTML = 'None';
-                    }
-
-                    tooltip.innerHTML = `
-                        <strong>${name}</strong> &nbsp; <strong>Class ${cls}</strong> &nbsp; <strong>CID: ${cid}</strong>
-                        <hr style="border:0; border-top:1px solid #cbd5e1; margin:8px 0;">
-                        <div style="font-weight:700; margin-bottom:4px; color:#475569;">${orgTitle}:</div>
-                        <div style="padding-left:4px;">${orgListHTML}</div>
-                    `;
-                    
-                    tooltip.style.display = 'block';
-                    tooltip.style.left = (e.clientX + 15) + 'px';
-                    tooltip.style.top = (e.clientY + 15) + 'px';
-                };
-
-                row._mouseLeaveHandler = () => {
-                    tooltip.style.display = 'none';
-                };
-
-                row._clickHandler = () => {
-                    activeRow = row;
-                    tooltip.style.display = 'none';
-
-                    const uid = row.getAttribute('data-uid');
-                    const roleVal = (row.getAttribute('data-role') || 'student').toLowerCase();
-                    const isManaged = row.getAttribute('data-is-managed') === 'true';
-
-                    panelUid.value = uid;
-                    formExportUid.value = uid;
-                    panelName.value = row.getAttribute('data-name');
-                    panelClass.value = row.getAttribute('data-class');
-                    panelCid.value = row.getAttribute('data-cid');
-                    panelEmail.value = row.getAttribute('data-email');
-                    
-                    panelPassword.value = '';
-                    panelHashedPassword.value = '';
-                    
-                    const inputsToDisable = [panelName, panelClass, panelCid, panelEmail, panelPassword, panelRole];
-                    if (!isManaged) {
-                        inputsToDisable.forEach(inp => inp.disabled = true);
-                        btnModify.style.display = 'none';
-                        btnDeleteUser.style.display = 'none';
-                        exportSectionContainer.style.display = 'none';
-                    } else {
-                        inputsToDisable.forEach(inp => inp.disabled = false);
-                        btnModify.style.display = 'block';
-                        btnDeleteUser.style.display = 'block';
-                        if (roleVal === 'student') {
-                            exportSectionContainer.style.display = 'flex';
-                        } else {
-                            exportSectionContainer.style.display = 'none';
-                        }
-                    }
-
-                    chkAttendance.checked = false;
-                    chkParticipation.checked = false;
-                    chkSatisfactory.checked = false;
-                    chkSelectAll.checked = false;
-                    
-                    attOrgWrapper.classList.remove('visible');
-                    partOrgWrapper.classList.remove('visible');
-                    satOrgWrapper.classList.remove('visible');
-                    dateRangeWrapper.classList.remove('visible');
-
-                    exportStartDate.value = '2026-09-01';
-                    exportEndDate.value = new Date().toISOString().split('T')[0];
-
-                    panelRole.value = row.getAttribute('data-role') || 'student';
-                    
-                    if (roleVal === 'student') {
-                        panelOrgLabel.textContent = 'Organisations Enrolled:';
-                    } else {
-                        panelOrgLabel.textContent = 'Organisations Managed:';
-                    }
-
-                    let userOrgs = [];
-                    try { userOrgs = JSON.parse(row.getAttribute('data-orgs') || "[]"); } catch (e) { userOrgs = []; }
-                    const enrolledOids = userOrgs.map(o => String(o.oid));
-
-                    setupSubChecklist(attChecklistAnchor, attChecklistDropdown, attChecklistLabel, 'att');
-                    setupSubChecklist(partChecklistAnchor, partChecklistDropdown, partChecklistLabel, 'part');
-                    setupSubChecklist(satChecklistAnchor, satChecklistDropdown, satChecklistLabel, 'sat');
-
-                    orgCheckboxes.forEach(cb => {
-                        cb.checked = enrolledOids.includes(cb.value);
+                    currentDayActivities = calendar.getEvents().filter(function(e) {
+                        return e.startStr.split('T')[0] === clickedDateStr;
                     });
 
-                    updateChecklistSummary();
-                    initialData = getCurrentState();
-                    resetModifyButton();
+                    if (isPast && currentDayActivities.length === 0) {
+                        return;
+                    }
 
-                    detailPanel.classList.add('is-open');
-                };
+                    var isAlreadySelected = clickedCell.classList.contains('clicked-0');
+                    unselectCalendarDate();
 
-                row.addEventListener('mousemove', row._mouseMoveHandler);
-                row.addEventListener('mouseleave', row._mouseLeaveHandler);
-                row.addEventListener('click', row._clickHandler);
-            });
-        }
-        attachRowListeners();
+                    if (isAlreadySelected) {
+                        closeRightPanel();
+                        return;
+                    }
 
-        panelRole.addEventListener('input', () => {
-            const roleVal = panelRole.value.trim().toLowerCase();
-            const isManaged = activeRow && activeRow.getAttribute('data-is-managed') === 'true';
-            if (roleVal === 'student') {
-                panelOrgLabel.textContent = 'Organisations Enrolled:';
-                if (isManaged) exportSectionContainer.style.display = 'flex';
-            } else {
-                panelOrgLabel.textContent = 'Organisations Managed:';
-                exportSectionContainer.style.display = 'none';
-            }
-            checkFormChanged();
-        });
+                    currentSelectedDate = clickedDateStr;
 
-        function filterUsers() {
-            const query = searchInput.value.toLowerCase().trim();
-            const selectedClass = classFilter.value;
-
-            userRows.forEach(row => {
-                const uid = (row.getAttribute('data-uid') || '').toLowerCase();
-                const name = (row.getAttribute('data-name') || '').toLowerCase();
-                const cls = (row.getAttribute('data-class') || '');
-                const isManaged = row.getAttribute('data-is-managed') === 'true';
-
-                const matchesSearch = uid.includes(query) || name.includes(query);
-                const matchesClass = selectedClass === 'ALL' || cls === selectedClass;
-                const matchesManaged = !isFilterManagedActive || isManaged;
-
-                if (matchesSearch && matchesClass && matchesManaged) {
-                    row.style.display = 'grid';
-                } else {
-                    row.style.display = 'none';
-                }
-            });
-        }
-
-        searchInput.addEventListener('input', filterUsers);
-        classFilter.addEventListener('change', filterUsers);
-
-        filterManagedBtn.addEventListener('click', () => {
-            isFilterManagedActive = !isFilterManagedActive;
-            if (isFilterManagedActive) {
-                filterManagedBtn.classList.add('filter-active');
-                filterManagedBtn.textContent = 'Show All Users';
-            } else {
-                filterManagedBtn.classList.remove('filter-active');
-                filterManagedBtn.textContent = 'Only show students in my organisations';
-            }
-            filterUsers();
-        });
-
-        function showConfirmModal(title, message, isDanger, confirmCb, cancelCb = null) {
-            modalTitle.textContent = title;
-            modalMessage.textContent = message;
-            if (isDanger) {
-                btnModalConfirm.classList.add('danger');
-            } else {
-                btnModalConfirm.classList.remove('danger');
-            }
-            onConfirmCallback = confirmCb;
-            onCancelCallback = cancelCb;
-            confirmModal.classList.add('is-visible');
-        }
-
-        btnModalCancel.addEventListener('click', () => {
-            confirmModal.classList.remove('is-visible');
-            if (onCancelCallback) onCancelCallback();
-            onConfirmCallback = null;
-            onCancelCallback = null;
-        });
-
-        btnModalConfirm.addEventListener('click', () => {
-            confirmModal.classList.remove('is-visible');
-            if (onConfirmCallback) onConfirmCallback();
-            onConfirmCallback = null;
-            onCancelCallback = null;
-        });
-
-        checklistAnchor.addEventListener('click', () => {
-            checklistDropdown.classList.toggle('visible');
-        });
-
-        document.addEventListener('click', (e) => {
-            if (!checklistAnchor.contains(e.target) && !checklistDropdown.contains(e.target)) {
-                checklistDropdown.classList.remove('visible');
-            }
-        });
-
-        function updateChecklistSummary() {
-            const checkedCount = document.querySelectorAll('.org-checkbox:checked').length;
-            checklistLabel.textContent = checkedCount > 0 ? `${checkedCount} Organisation(s) Selected` : 'Select Organisations...';
-        }
-
-        orgCheckboxes.forEach(cb => {
-            cb.addEventListener('change', () => {
-                updateChecklistSummary();
-                checkFormChanged();
-            });
-        });
-
-        function getCurrentState() {
-            const checkedOrgs = Array.from(document.querySelectorAll('.org-checkbox:checked')).map(cb => cb.value).sort();
-            return {
-                name: panelName.value,
-                class: panelClass.value,
-                cid: panelCid.value,
-                email: panelEmail.value,
-                password: panelPassword.value,
-                role: panelRole.value,
-                orgs: checkedOrgs.join(',')
-            };
-        }
-
-        function checkFormChanged() {
-            const isChanged = JSON.stringify(getCurrentState()) !== JSON.stringify(initialData);
-            if (isChanged) {
-                btnModify.classList.add('is-active');
-                btnModify.disabled = false;
-            } else {
-                resetModifyButton();
-            }
-        }
-
-        function resetModifyButton() {
-            btnModify.classList.remove('is-active');
-            btnModify.disabled = true;
-        }
-
-        function resetFieldsToInitial() {
-            panelName.value = initialData.name;
-            panelClass.value = initialData.class;
-            panelCid.value = initialData.cid;
-            panelEmail.value = initialData.email;
-            panelPassword.value = initialData.password;
-            panelHashedPassword.value = '';
-            panelRole.value = initialData.role;
-
-            const roleVal = initialData.role.trim().toLowerCase();
-            if (roleVal === 'student') {
-                panelOrgLabel.textContent = 'Organisations Enrolled:';
-            } else {
-                panelOrgLabel.textContent = 'Organisations Managed:';
-            }
-
-            const initialOrgs = initialData.orgs ? initialData.orgs.split(',') : [];
-            orgCheckboxes.forEach(cb => {
-                cb.checked = initialOrgs.includes(cb.value);
-            });
-
-            updateChecklistSummary();
-            resetModifyButton();
-        }
-
-        [panelName, panelClass, panelCid, panelEmail, panelRole].forEach(input => {
-            input.addEventListener('input', checkFormChanged);
-        });
-
-        closePanelBtn.addEventListener('click', () => {
-            detailPanel.classList.remove('is-open');
-            checklistDropdown.classList.remove('visible');
-        });
-
-        btnExportPdf.addEventListener('click', () => {
-            const uid = panelUid.value;
-            const isAttendanceChecked = chkAttendance.checked;
-            const isParticipationChecked = chkParticipation.checked;
-            const isSatisfactoryChecked = chkSatisfactory.checked;
-
-            if (!isAttendanceChecked && !isParticipationChecked && !isSatisfactoryChecked) {
-                alert('Please select at least one report option to export.');
-                return;
-            }
-
-            const form = exportForm;
-            form.querySelectorAll('.dyn-hidden-org').forEach(el => el.remove());
-
-            const appendOrgInputs = (dropdownId, fieldName) => {
-                const cbs = document.querySelectorAll(`#${dropdownId} input[type="checkbox"]:checked`);
-                cbs.forEach(cb => {
-                    const inp = document.createElement('input');
-                    inp.type = 'hidden';
-                    inp.name = fieldName + '[]';
-                    inp.value = cb.value;
-                    inp.className = 'dyn-hidden-org';
-                    form.appendChild(inp);
-                });
-            };
-
-            if (isAttendanceChecked) appendOrgInputs('attChecklistDropdown', 'opt_attendance_orgs');
-            if (isParticipationChecked) appendOrgInputs('partChecklistDropdown', 'opt_participation_orgs');
-            if (isSatisfactoryChecked) appendOrgInputs('satChecklistDropdown', 'opt_satisfactory_orgs');
-
-            showConfirmModal(
-                'Export PDF Report Confirmation',
-                `Are you sure you want to generate and export the selected report for student UID: ${uid}?`,
-                false,
-                () => {
-                    exportForm.submit();
-                }
-            );
-        });
-
-        btnModify.addEventListener('click', () => {
-            if (btnModify.disabled) return;
-            const uid = panelUid.value;
-
-            showConfirmModal(
-                'Modify User Confirmation',
-                `Are you sure you want to save modifications for user UID: ${uid}?`,
-                false,
-                async () => {
-                    const selectedOrgs = Array.from(document.querySelectorAll('.org-checkbox:checked')).map(cb => cb.value);
-
-                    const payload = {
-                        uid: panelUid.value,
-                        name: panelName.value,
-                        class: panelClass.value,
-                        cid: panelCid.value,
-                        email: panelEmail.value,
-                        password: panelPassword.value,
-                        role: panelRole.value,
-                        orgs: selectedOrgs
-                    };
-
-                    try {
-                        const response = await fetch(window.location.href, {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify(payload)
-                        });
-
-                        const result = await response.json();
-
-                        if (result.success) {
-                            alert(`User ${uid} updated successfully.`);
-                            location.reload();
-                        } else {
-                            alert('Failed to update database: ' + result.message);
+                    if (currentDayActivities.length > 0) {
+                        calendarEl.classList.add('calendar-active-mode-red');
+                        openPanelWithActivityList(currentDayActivities);
+                        if (!isPast) {
+                            applyHeatmapSpread(clickedDateStr);
                         }
-                    } catch (err) {
-                        console.error('Save failed:', err);
-                        alert('An error occurred while saving user details.');
+                    } else {
+                        calendarEl.classList.add('calendar-active-mode-blue');
+                        openActivityPanelForCreate(clickedDateStr);
+                        applyHeatmapSpread(clickedDateStr);
                     }
                 },
-                () => {
-                    resetFieldsToInitial();
-                }
-            );
-        });
 
-        btnDeleteUser.addEventListener('click', () => {
-            const uid = panelUid.value;
-            showConfirmModal(
-                'Delete User Confirmation',
-                `Are you sure you want to PERMANENTLY delete user UID: ${uid}?`,
-                true,
-                async () => {
-                    try {
-                        const response = await fetch(window.location.href, {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ action: 'delete', uid: uid })
-                        });
-                        const result = await response.json();
-                        if (result.success) {
-                            alert('User deleted successfully.');
-                            location.reload();
-                        } else {
-                            alert('Failed to delete user: ' + result.message);
-                        }
-                    } catch (err) {
-                        console.error('Delete failed:', err);
-                        alert('An error occurred while deleting the user.');
+                eventClick: function(info) {
+                    var eventDateStr = info.event.startStr.split('T')[0];
+                    var todayStr = getTodayDateStr();
+                    var isPast = eventDateStr < todayStr;
+
+                    unselectCalendarDate();
+                    currentSelectedDate = eventDateStr;
+                    currentDayActivities = calendar.getEvents().filter(function(e) {
+                        return e.startStr.split('T')[0] === currentSelectedDate;
+                    });
+
+                    if (!isPast) {
+                        calendarEl.classList.add('calendar-active-mode-red');
+                        applyHeatmapSpread(currentSelectedDate);
+                    }
+                    
+                    openPanelWithActivityList(currentDayActivities);
+                    var clickedEvt = currentDayActivities.find(e => e.id == info.event.id);
+                    if (clickedEvt) {
+                        showActivityDetails(clickedEvt);
                     }
                 }
-            );
+            });
+
+            calendar.render();
+
+            function applyHeatmapSpread(clickedDateStr) {
+                var baseDate = new Date(clickedDateStr + 'T00:00:00');
+                var baseDayOfWeek = baseDate.getDay();
+
+                for (var rowOffset = -3; rowOffset <= 3; rowOffset++) {
+                    for (var colOffset = -3; colOffset <= 3; colOffset++) {
+                        var targetCol = baseDayOfWeek + colOffset;
+                        if (targetCol < 0 || targetCol > 6) continue;
+
+                        var totalDaysOffset = (rowOffset * 7) + colOffset;
+                        var targetDate = new Date(baseDate);
+                        targetDate.setDate(targetDate.getDate() + totalDaysOffset);
+
+                        var year = targetDate.getFullYear();
+                        var month = String(targetDate.getMonth() + 1).padStart(2, '0');
+                        var day = String(targetDate.getDate()).padStart(2, '0');
+                        var dateStr = year + '-' + month + '-' + day;
+
+                        var targetEl = document.querySelector('.fc-daygrid-day[data-date="' + dateStr + '"]');
+                        if (targetEl && !targetEl.classList.contains('fc-day-past')) {
+                            var distance = Math.max(Math.abs(rowOffset), Math.abs(colOffset));
+                            if (distance <= 3) {
+                                targetEl.classList.add('clicked-' + distance);
+                            }
+                        }
+                    }
+                }
+            }
+
+            function markCellsWithEvents() {
+                document.querySelectorAll('.fc-daygrid-day').forEach(function(el) {
+                    el.classList.remove('has-event');
+                });
+                calendar.getEvents().forEach(function(evt) {
+                    if (evt.start) {
+                        var dStr = evt.startStr.split('T')[0];
+                        var cell = document.querySelector('.fc-daygrid-day[data-date="' + dStr + '"]');
+                        if (cell) {
+                            cell.classList.add('has-event');
+                        }
+                    }
+                });
+            }
+
+            markCellsWithEvents();
+            markPastDays();
+
+            function openPanelWithActivityList(activitiesList) {
+                resetPanelPosition();
+
+                const todayStr = getTodayDateStr();
+                const isPast = currentSelectedDate < todayStr;
+
+                if (isPast) {
+                    tabCreate.style.display = 'none';
+                    tabSeparator.style.display = 'none';
+                } else {
+                    tabCreate.style.display = 'inline-block';
+                    tabSeparator.style.display = 'inline-block';
+                }
+
+                tabExisting.style.display = 'inline-block';
+                tabExisting.classList.add('active');
+                tabCreate.classList.remove('active');
+
+                activityCardsContainer.innerHTML = '';
+                
+                activitiesList.forEach(function(evt) {
+                    var card = document.createElement('div');
+                    card.className = 'activity-card';
+                    
+                    var titleEl = document.createElement('div');
+                    titleEl.className = 'activity-card-title';
+                    titleEl.textContent = evt.title;
+
+                    var subEl = document.createElement('div');
+                    subEl.className = 'activity-card-sub';
+                    var orgName = evt.extendedProps.oname || 'Unknown Organisation';
+                    var mgmtStatus = evt.extendedProps.isManaged ? '' : ' (Read-Only)';
+                    subEl.textContent = 'Org: ' + orgName + ' | ' + (evt.extendedProps.timeslot || 'Lunch Recess') + mgmtStatus;
+
+                    card.appendChild(titleEl);
+                    card.appendChild(subEl);
+
+                    card.addEventListener('click', function() {
+                        showActivityDetails(evt);
+                    });
+
+                    activityCardsContainer.appendChild(card);
+                });
+
+                activitiesListView.style.display = 'block';
+                activityFormView.style.display = 'none';
+                panel.classList.add('active');
+            }
+
+            function showActivityDetails(eventObj) {
+                activitiesListView.style.display = 'none';
+                activityFormView.style.display = 'block';
+                returnBackBtn.style.display = 'inline-flex';
+
+                loadActivityIntoForm(eventObj);
+            }
+
+            function loadActivityIntoForm(eventObj) {
+                currentMode = 'modify';
+                var props = eventObj.extendedProps;
+                activeEventId = eventObj.id;
+                var isManaged = props.isManaged;
+
+                actionBtn.textContent = 'Modify';
+                actionBtn.classList.remove('btn-create-mode');
+
+                initialActivityData = {
+                    aid: props.aid || eventObj.id,
+                    oid: props.oid || '',
+                    oname: props.oname || '',
+                    aname: props.aname || eventObj.title,
+                    date: props.date || eventObj.startStr.split('T')[0],
+                    room: props.room || '',
+                    timeslot: props.timeslot || 'Lunch Recess'
+                };
+
+                document.getElementById('field_aid').value = initialActivityData.aid;
+                
+                var oidSelect = document.getElementById('field_oid');
+                if (!isManaged && initialActivityData.oid) {
+                    let exists = false;
+                    for (let i = 0; i < oidSelect.options.length; i++) {
+                        if (oidSelect.options[i].value == initialActivityData.oid) {
+                            exists = true;
+                            break;
+                        }
+                    }
+                    if (!exists) {
+                        let opt = document.createElement('option');
+                        opt.value = initialActivityData.oid;
+                        opt.textContent = initialActivityData.oid + '. ' + initialActivityData.oname;
+                        oidSelect.appendChild(opt);
+                    }
+                }
+                oidSelect.value = initialActivityData.oid;
+
+                document.getElementById('field_aname').value = initialActivityData.aname;
+                document.getElementById('field_date').value = initialActivityData.date;
+                document.getElementById('field_room').value = initialActivityData.room;
+                document.getElementById('field_timeslot').value = initialActivityData.timeslot;
+
+                const todayStr = getTodayDateStr();
+                const isPast = initialActivityData.date < todayStr;
+
+                if (!isManaged) {
+                    formInputs.forEach(inp => inp.disabled = true);
+                    actionBtn.style.display = 'none';
+                    deleteBtn.style.display = 'none';
+                    tabCreate.style.display = isPast ? 'none' : 'inline-block';
+                } else {
+                    formInputs.forEach(inp => inp.disabled = false);
+                    document.getElementById('field_aid').disabled = true;
+                    actionBtn.style.display = 'block';
+                    deleteBtn.style.display = isPast ? 'none' : 'block';
+                    tabCreate.style.display = isPast ? 'none' : 'inline-block';
+                    if (isPast) tabSeparator.style.display = 'none';
+                    actionBtn.disabled = true;
+                }
+            }
+
+            function openActivityPanelForCreate(selectedDate) {
+                const todayStr = getTodayDateStr();
+                if (selectedDate < todayStr) return;
+
+                resetPanelPosition();
+
+                currentMode = 'create';
+                activeEventId = null;
+
+                formInputs.forEach(inp => inp.disabled = false);
+                document.getElementById('field_aid').disabled = true;
+
+                tabCreate.style.display = 'inline-block';
+                tabSeparator.style.display = 'inline-block';
+
+                if (currentDayActivities.length === 0) {
+                    tabExisting.style.display = 'none';
+                    tabSeparator.style.display = 'none';
+                } else {
+                    tabExisting.style.display = 'inline-block';
+                    tabSeparator.style.display = 'inline-block';
+                }
+
+                tabCreate.classList.add('active');
+                tabExisting.classList.remove('active');
+
+                activitiesListView.style.display = 'none';
+                activityFormView.style.display = 'block';
+                returnBackBtn.style.display = 'none';
+
+                actionBtn.textContent = 'Create Activity';
+                actionBtn.classList.add('btn-create-mode');
+
+                document.getElementById('field_aid').value = '';
+                document.getElementById('field_oid').value = '';
+                document.getElementById('field_aname').value = '';
+                document.getElementById('field_date').value = selectedDate || currentSelectedDate;
+                document.getElementById('field_room').value = '';
+                document.getElementById('field_timeslot').value = 'Lunch Recess';
+
+                actionBtn.style.display = 'block';
+                actionBtn.disabled = true;
+                deleteBtn.style.display = 'none';
+                panel.classList.add('active');
+            }
+
+            returnBackBtn.addEventListener('click', function() {
+                activityFormView.style.display = 'none';
+                activitiesListView.style.display = 'block';
+            });
+
+            tabExisting.addEventListener('click', function() {
+                if (currentDayActivities.length > 0) {
+                    openPanelWithActivityList(currentDayActivities);
+                }
+            });
+
+            tabCreate.addEventListener('click', function() {
+                if (currentSelectedDate < getTodayDateStr()) return;
+                openActivityPanelForCreate(currentSelectedDate);
+            });
+
+            function closeRightPanel() {
+                panel.classList.remove('active');
+                deleteBtn.style.display = 'none';
+                resetPanelPosition();
+                unselectCalendarDate();
+            }
+
+            document.getElementById('closePanelBtn').addEventListener('click', closeRightPanel);
+
+            formInputs.forEach(function(input) {
+                input.addEventListener('input', checkFormModifications);
+                input.addEventListener('change', checkFormModifications);
+            });
+
+            function checkFormModifications() {
+                if (currentMode === 'create') {
+                    var hasContent = document.getElementById('field_aname').value.trim() !== '' &&
+                                     document.getElementById('field_oid').value !== '' &&
+                                     document.getElementById('field_room').value.trim() !== '';
+                    actionBtn.disabled = !hasContent;
+                } else {
+                    var isModified = 
+                        document.getElementById('field_oid').value != initialActivityData.oid ||
+                        document.getElementById('field_aname').value != initialActivityData.aname ||
+                        document.getElementById('field_date').value != initialActivityData.date ||
+                        document.getElementById('field_room').value != initialActivityData.room ||
+                        document.getElementById('field_timeslot').value != initialActivityData.timeslot;
+
+                    actionBtn.disabled = !isModified;
+                }
+            }
+
+            var confirmModal = document.getElementById('confirmModal');
+            var confirmModalBtn = document.getElementById('confirmModalBtn');
+
+            actionBtn.addEventListener('click', function() {
+                if (actionBtn.disabled) return;
+
+                confirmModalBtn.classList.remove('delete-mode');
+                if (currentMode === 'create') {
+                    document.getElementById('modalHeading').textContent = 'Confirm Creation';
+                    document.getElementById('modalDescription').textContent = 'Are you sure you want to add this new activity?';
+                } else {
+                    document.getElementById('modalHeading').textContent = 'Confirm Modifications';
+                    document.getElementById('modalDescription').textContent = 'Are you sure you want to save changes to this activity?';
+                }
+                confirmModal.classList.add('active');
+            });
+
+            deleteBtn.addEventListener('click', function() {
+                currentMode = 'delete';
+                confirmModalBtn.classList.add('delete-mode');
+                document.getElementById('modalHeading').textContent = 'Confirm Deletion';
+                document.getElementById('modalDescription').textContent = 'Are you sure you want to delete this activity? This action cannot be undone.';
+                confirmModal.classList.add('active');
+            });
+
+            document.getElementById('cancelModalBtn').addEventListener('click', function() {
+                confirmModal.classList.remove('active');
+            });
+
+            confirmModalBtn.addEventListener('click', function() {
+                confirmModal.classList.remove('active');
+
+                var formData = new FormData();
+                formData.append('action', currentMode);
+                formData.append('aid', document.getElementById('field_aid').value);
+
+                if (currentMode !== 'delete') {
+                    formData.append('oid', document.getElementById('field_oid').value);
+                    formData.append('aname', document.getElementById('field_aname').value);
+                    formData.append('date', document.getElementById('field_date').value);
+                    formData.append('room', document.getElementById('field_room').value);
+                    formData.append('timeslot', document.getElementById('field_timeslot').value);
+                }
+
+                fetch('t-activity.php', {
+                    method: 'POST',
+                    body: formData
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.status === 'success') {
+                        if (currentMode === 'delete') {
+                            var activeEvt = calendar.getEventById(activeEventId);
+                            if (activeEvt) activeEvt.remove();
+                            alert('Activity deleted successfully!');
+                            closeRightPanel();
+                        } else if (currentMode === 'modify') {
+                            var anameVal = document.getElementById('field_aname').value;
+                            var dateVal = document.getElementById('field_date').value;
+                            var oidVal = document.getElementById('field_oid').value;
+                            var roomVal = document.getElementById('field_room').value;
+                            var timeslotVal = document.getElementById('field_timeslot').value;
+                            
+                            var oidSelect = document.getElementById('field_oid');
+                            var selectedOrgText = oidSelect.options[oidSelect.selectedIndex] ? oidSelect.options[oidSelect.selectedIndex].text : '';
+                            var onameVal = selectedOrgText.includes('.') ? selectedOrgText.split('.')[1].trim() : selectedOrgText;
+
+                            var activeEvt = calendar.getEventById(activeEventId);
+                            if (activeEvt) {
+                                activeEvt.setProp('title', anameVal);
+                                activeEvt.setStart(dateVal);
+                                activeEvt.setExtendedProp('aname', anameVal);
+                                activeEvt.setExtendedProp('date', dateVal);
+                                activeEvt.setExtendedProp('oid', oidVal);
+                                activeEvt.setExtendedProp('oname', onameVal);
+                                activeEvt.setExtendedProp('room', roomVal);
+                                activeEvt.setExtendedProp('timeslot', timeslotVal);
+                            }
+
+                            initialActivityData = { aid: document.getElementById('field_aid').value, oid: oidVal, oname: onameVal, aname: anameVal, date: dateVal, room: roomVal, timeslot: timeslotVal };
+                            alert('Activity updated successfully!');
+                            actionBtn.disabled = true;
+                        } else if (currentMode === 'create') {
+                            var anameVal = document.getElementById('field_aname').value;
+                            var dateVal = document.getElementById('field_date').value;
+                            var oidVal = document.getElementById('field_oid').value;
+                            var roomVal = document.getElementById('field_room').value;
+                            var timeslotVal = document.getElementById('field_timeslot').value;
+
+                            var oidSelect = document.getElementById('field_oid');
+                            var selectedOrgText = oidSelect.options[oidSelect.selectedIndex] ? oidSelect.options[oidSelect.selectedIndex].text : '';
+                            var onameVal = selectedOrgText.includes('.') ? selectedOrgText.split('.')[1].trim() : selectedOrgText;
+
+                            calendar.addEvent({
+                                id: data.aid,
+                                title: anameVal,
+                                start: dateVal,
+                                extendedProps: { aid: data.aid, oid: oidVal, oname: onameVal, aname: anameVal, date: dateVal, room: roomVal, timeslot: timeslotVal, isManaged: true }
+                            });
+
+                            alert('New activity created successfully!');
+                            closeRightPanel();
+                        }
+
+                        markCellsWithEvents();
+                        markPastDays();
+                    } else {
+                        alert('Error: ' + (data.message || 'Unknown error occurred'));
+                    }
+                })
+                .catch(err => {
+                    alert('Request failed: ' + err);
+                });
+            });
         });
     </script>
 </body>
