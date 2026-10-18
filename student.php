@@ -2,15 +2,18 @@
 session_start();
 
 require_once 'db.php';
+
 if (!isset($_SESSION['role']) || strtolower($_SESSION['role']) !== 'student') {
     // Redirect unauthorized users to an error page or their respective dashboard
     header('Location: unauthorized.php');
     exit();
 }
+
 if (!isset($_SESSION['uid']) && !isset($_SESSION['user_id'])) {
     header('Location: login.php');
     exit();
 }
+
 try {
     $pdo = new PDO("mysql:host=$host;dbname=$dbname;charset=utf8mb4", $username, $password, [
         PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
@@ -20,10 +23,10 @@ try {
     die("Database Connection Failed: " . $e->getMessage());
 }
 
-// Retrieve logged-in user identifier from session[cite: 3]
+// Retrieve logged-in user identifier from session
 $studentUid = $_SESSION['uid'] ?? $_SESSION['user_id'] ?? $_SESSION['id'] ?? 2;
 
-// Fetch complete user details from the database[cite: 3]
+// Fetch complete user details from the database
 $stmt = $pdo->prepare("SELECT uid, name, email, role, class, cid FROM users WHERE uid = ?");
 $stmt->execute([$studentUid]);
 $userInfo = $stmt->fetch() ?: [
@@ -61,13 +64,10 @@ try {
         $diffDays = (int)$todayObj->diff($actDateObj)->format('%r%a');
         $showAlert = false;
 
-        // Show reminder if the activity is today or upcoming within 24 hours[cite: 1]
+        // Show reminder if the activity is today or upcoming within 24 hours
         if ($diffDays === 0 || ($diffDays === 1 && $currentTime->format('H:i') >= '00:00')) {
             $showAlert = true;
         }
-
-        // --- FORCED TEST MODE (Uncomment line below if you want to force-test the warning box appearance) ---
-        // $showAlert = true;
 
         if ($showAlert) {
             $monitorAlerts[] = [
