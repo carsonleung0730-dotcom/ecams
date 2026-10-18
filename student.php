@@ -1,7 +1,8 @@
 <?php
-session_start();
 
 require_once 'db.php';
+session_start();
+
 
 if (!isset($_SESSION['role']) || strtolower($_SESSION['role']) !== 'student') {
     // Redirect unauthorized users to an error page or their respective dashboard
@@ -10,26 +11,15 @@ if (!isset($_SESSION['role']) || strtolower($_SESSION['role']) !== 'student') {
 }
 
 if (!isset($_SESSION['uid']) && !isset($_SESSION['user_id'])) {
-    header('Location: login.php');
+    header('Location: shit.php');
     exit();
 }
 
-try {
-    $pdo = new PDO("mysql:host=$host;dbname=$dbname;charset=utf8mb4", $username, $password, [
-        PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-        PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC
-    ]);
-} catch (PDOException $e) {
-    die("Database Connection Failed: " . $e->getMessage());
-}
-
-// Retrieve logged-in user identifier from session
+// Retrieve logged-in user identifier from session[cite: 3]
 $studentUid = $_SESSION['uid'] ?? $_SESSION['user_id'] ?? $_SESSION['id'] ?? 2;
 
-// Fetch complete user details from the database
-$stmt = $pdo->prepare("SELECT uid, name, email, role, class, cid FROM users WHERE uid = ?");
-$stmt->execute([$studentUid]);
-$userInfo = $stmt->fetch() ?: [
+// Fetch complete user details from the database using MySQLi[cite: 3]
+$userInfo = [
     'uid' => $studentUid,
     'name' => 'Student User',
     'email' => 'student@ecams.local',
@@ -38,44 +28,61 @@ $userInfo = $stmt->fetch() ?: [
     'cid' => '1'
 ];
 
+if (isset($conn) && $conn instanceof mysqli) {
+    $stmt = $conn->prepare("SELECT uid, name, email, role, class, cid FROM users WHERE uid = ?");
+    $stmt->bind_param("s", $studentUid);
+    $stmt->execute();
+    $res = $stmt->get_result();
+    if ($row = $res->fetch_assoc()) {
+        $userInfo = $row;
+    }
+    $stmt->close();
+}
+
 $monitorAlerts = [];
 $debugActivitiesCount = 0;
 
 try {
-    // Correctly query activities linked to the organizations this student monitors
-    $alertStmt = $pdo->prepare("
-        SELECT a.aid, a.aname, a.date, a.timeslot, o.oname
-        FROM monitor mn
-        JOIN organisations o ON mn.oid = o.oid
-        JOIN activity a ON o.oid = a.oid
-        WHERE CAST(mn.mid AS CHAR) = CAST(? AS CHAR)
-        ORDER BY a.date ASC
-    ");
-    $alertStmt->execute([$studentUid]);
-    $monitoredActivities = $alertStmt->fetchAll();
-    $debugActivitiesCount = count($monitoredActivities);
-
-    $currentTime = new DateTime('now');
-
-    foreach ($monitoredActivities as $act) {
-        $actDateObj = new DateTime($act['date']);
-        $todayObj = new DateTime($currentTime->format('Y-m-d'));
+    if (isset($conn) && $conn instanceof mysqli) {
+        // Correctly query activities linked to the organizations this student monitors
+        $alertStmt = $conn->prepare("
+            SELECT a.aid, a.aname, a.date, a.timeslot, o.oname
+            FROM monitor mn
+            JOIN organisations o ON mn.oid = o.oid
+            JOIN activity a ON o.oid = a.oid
+            WHERE CAST(mn.mid AS CHAR) = CAST(? AS CHAR)
+            ORDER BY a.date ASC
+        ");
+        $alertStmt->bind_param("s", $studentUid);
+        $alertStmt->execute();
+        $alertRes = $alertStmt->get_result();
+        $monitoredActivities = $alertRes->fetch_all(MYSQLI_ASSOC);
+        $alertStmt->close();
         
-        $diffDays = (int)$todayObj->diff($actDateObj)->format('%r%a');
-        $showAlert = false;
+        $debugActivitiesCount = count($monitoredActivities);
 
-        // Show reminder if the activity is today or upcoming within 24 hours
-        if ($diffDays === 0 || ($diffDays === 1 && $currentTime->format('H:i') >= '00:00')) {
-            $showAlert = true;
-        }
+        $currentTime = new DateTime('now');
 
-        if ($showAlert) {
-            $monitorAlerts[] = [
-                'aid' => $act['aid'],
-                'act_name' => $act['aname'],
-                'org_name' => $act['oname'],
-                'timeslot' => $act['timeslot']
-            ];
+        foreach ($monitoredActivities as $act) {
+            $actDateObj = new DateTime($act['date']);
+            $todayObj = new DateTime($currentTime->format('Y-m-d'));
+            
+            $diffDays = (int)$todayObj->diff($actDateObj)->format('%r%a');
+            $showAlert = false;
+
+            // Show reminder if the activity is today or upcoming within 24 hours[cite: 1]
+            if ($diffDays === 0 || ($diffDays === 1 && $currentTime->format('H:i') >= '00:00')) {
+                $showAlert = true;
+            }
+
+            if ($showAlert) {
+                $monitorAlerts[] = [
+                    'aid' => $act['aid'],
+                    'act_name' => $act['aname'],
+                    'org_name' => $act['oname'],
+                    'timeslot' => $act['timeslot']
+                ];
+            }
         }
     }
 } catch (Exception $e) {
