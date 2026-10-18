@@ -12,50 +12,40 @@ if (!isset($_SESSION['uid']) && !isset($_SESSION['user_id'])) {
     exit();
 }
 
-// Enable error reporting to catch issues immediately
-ini_set('display_errors', 1);
-error_reporting(E_ALL);
-
 $studentUid =$_SESSION['uid'] ?? $_SESSION['user_id'] ?? $_SESSION['id'] ?? 2;
 
-$managedOrgIds = [];$dbActivities = [];
-
-if (isset($conn) && $conn instanceof mysqli) { // 1. Fetch student organizations with explicit error handling$queryOrg = "
+// Fetch organizations where the logged-in student is a member using exact column names
+$managedOrgIds = [];
+if (isset($conn) &&$conn instanceof mysqli) {
+    $mOrgStmt =$conn->prepare("
         SELECT o.oid, o.oname 
         FROM membership m 
         JOIN organisations o ON m.oid = o.oid 
         WHERE m.sid = ? 
         ORDER BY o.oname ASC
-    ";
-    
-    $mOrgStmt = $conn->prepare($queryOrg);
-    if (!$mOrgStmt) {
-        die("SQL Prepare Error (Organisations): " . $conn->error . "<br>Check if your table names ('membership', 'organisations') or columns ('oid', 'sid') match your database.");
-    }
-    
-    $mOrgStmt->bind_param("s", $studentUid);$mOrgStmt->execute();
-    $mOrgRes =$mOrgStmt->get_result();
-    while ($row =$mOrgRes->fetch_assoc()) {
-        $managedOrgIds[] = intval($row['oid']);
-    }
-    $mOrgStmt->close();
-
-    // 2. Fetch activities for those organizations
-    if (!empty($managedOrgIds)) {$idsString = implode(',', $managedOrgIds);$queryAct = "
-            SELECT a.aid, a.oid, a.aname, a.date, a.room, a.timeslot, o.oname 
-            FROM activity a 
-            LEFT JOIN organisations o ON a.oid = o.oid 
-            WHERE a.oid IN ($idsString)
-        ";
-        
-        $stmt = $conn->query($queryAct);
-        if (!$stmt) {
-            die("SQL Query Error (Activities): " . $conn->error);
+    ");
+    if ($mOrgStmt) {$mOrgStmt->bind_param("s", $studentUid);$mOrgStmt->execute();
+        $mOrgRes =$mOrgStmt->get_result();
+        while ($row =$mOrgRes->fetch_assoc()) {
+            $managedOrgIds[] = intval($row['oid']);
         }
+        $mOrgStmt->close();
+    }
+}
+
+// Fetch activities ONLY for the organizations this student belongs to
+$dbActivities = [];
+if (isset($conn) && $conn instanceof mysqli && !empty($managedOrgIds)) {
+    $idsString = implode(',',$managedOrgIds);
+    $stmt =$conn->query("
+        SELECT a.aid, a.oid, a.aname, a.date, a.room, a.timeslot, o.oname 
+        FROM activity a 
+        LEFT JOIN organisations o ON a.oid = o.oid 
+        WHERE a.oid IN ($idsString)
+    ");
+    if ($stmt) {
         $dbActivities =$stmt->fetch_all(MYSQLI_ASSOC);
     }
-} else {
-    die("Database connection error: \$conn variable is missing or not a MySQLi instance.");
 }
 
 $events = array_map(function($act) {
@@ -510,7 +500,8 @@ $events = array_map(function($act) {
                     var subEl = document.createElement('div');
                     subEl.className = 'activity-card-sub';
                     var orgName = evt.extendedProps.oname || 'Unknown Organisation';
-                    subEl.textContent = 'Org: ' + orgName + ' | ' + (evt.extendedProps.timeslot || 'Lunch Recess');
+                    subSubText = 'Org: ' + orgName + ' | ' + (evt.extendedProps.timeslot || 'Lunch Recess');
+                    subEl.textContent = subSubText;
 
                     card.appendChild(titleEl);
                     card.appendChild(subEl);
