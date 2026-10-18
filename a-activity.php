@@ -1,23 +1,16 @@
 <?php
+// Database configuration and session parameters loaded FIRST to avoid warnings
+require_once 'db.php';   
+
 session_start();
 
-require_once 'db.php';
 if (!isset($_SESSION['role']) || strtolower($_SESSION['role']) !== 'admin') {
-    // Redirect unauthorized users to an error page or their respective dashboard
     header('Location: unauthorized.php');
     exit();
 }
 if (!isset($_SESSION['uid']) && !isset($_SESSION['user_id'])) {
-    header('Location: login.php');
+    header('Location: shit.php');
     exit();
-}
-try {
-    $pdo = new PDO("mysql:host=$host;dbname=$dbname;charset=utf8mb4", $username, $password, [
-        PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-        PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC
-    ]);
-} catch (PDOException $e) {
-    die("Database Connection Failed: " . $e->getMessage());
 }
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
@@ -26,49 +19,57 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
 
     if ($action === 'modify') {
         $aid = intval($_POST['aid']);
-        $oid = intval($_POST['oid']);
+        $oid = trim($_POST['oid']);
         $aname = trim($_POST['aname']);
         $date = trim($_POST['date']);
         $room = intval($_POST['room']);
         $timeslot = trim($_POST['timeslot']);
 
-        try {
-            $stmt = $pdo->prepare("UPDATE activity SET oid = ?, aname = ?, date = ?, room = ?, timeslot = ? WHERE aid = ?");
-            $stmt->execute([$oid, $aname, $date, $room, $timeslot, $aid]);
+        $stmt = $conn->prepare("UPDATE activity SET oid = ?, aname = ?, date = ?, room = ?, timeslot = ? WHERE aid = ?");
+        $stmt->bind_param("sssisi", $oid, $aname, $date, $room, $timeslot, $aid);
+        
+        if ($stmt->execute()) {
             echo json_encode(['status' => 'success']);
-        } catch (PDOException $e) {
-            echo json_encode(['status' => 'error', 'message' => $e->getMessage()]);
+        } else {
+            echo json_encode(['status' => 'error', 'message' => $stmt->error]);
         }
+        $stmt->close();
         exit();
     }
 
     if ($action === 'create') {
-        $oid = intval($_POST['oid']);
+        $oid = trim($_POST['oid']);
         $aname = trim($_POST['aname']);
         $date = trim($_POST['date']);
         $room = intval($_POST['room']);
         $timeslot = trim($_POST['timeslot']);
 
+        $conn->begin_transaction();
         try {
-            $pdo->beginTransaction();
+            $stmt = $conn->prepare("INSERT INTO activity (oid, aname, date, room, timeslot) VALUES (?, ?, ?, ?, ?)");
+            $stmt->bind_param("sssisi", $oid, $aname, $date, $room, $timeslot);
+            $stmt->execute();
+            $newAid = $conn->insert_id;
+            $stmt->close();
 
-            $stmt = $pdo->prepare("INSERT INTO activity (oid, aname, date, room, timeslot) VALUES (?, ?, ?, ?, ?)");
-            $stmt->execute([$oid, $aname, $date, $room, $timeslot]);
-            $newAid = $pdo->lastInsertId();
+            $memStmt = $conn->prepare("SELECT sid FROM membership WHERE oid = ?");
+            $memStmt->bind_param("s", $oid);
+            $memStmt->execute();
+            $memRes = $memStmt->get_result();
+            $members = $memRes->fetch_all(MYSQLI_ASSOC);
+            $memStmt->close();
 
-            $memStmt = $pdo->prepare("SELECT sid FROM membership WHERE oid = ?");
-            $memStmt->execute([$oid]);
-            $members = $memStmt->fetchAll();
-
-            $attStmt = $pdo->prepare("INSERT INTO attendance (aid, sid, attend, rate, `s.rate`) VALUES (?, ?, 0, 10, 10)");
+            $attStmt = $conn->prepare("INSERT INTO attendance (aid, sid, attend, rate, `s.rate`) VALUES (?, ?, 0, 10, 10)");
             foreach ($members as $member) {
-                $attStmt->execute([$newAid, $member['sid']]);
+                $attStmt->bind_param("is", $newAid, $member['sid']);
+                $attStmt->execute();
             }
+            $attStmt->close();
 
-            $pdo->commit();
+            $conn->commit();
             echo json_encode(['status' => 'success', 'aid' => $newAid]);
         } catch (Exception $e) {
-            $pdo->rollBack();
+            $conn->rollback();
             echo json_encode(['status' => 'error', 'message' => $e->getMessage()]);
         }
         exit();
@@ -77,30 +78,39 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
     if ($action === 'delete') {
         $aid = intval($_POST['aid']);
 
+        $conn->begin_transaction();
         try {
-            $pdo->beginTransaction();
+            $delAttStmt = $conn->prepare("DELETE FROM attendance WHERE aid = ?");
+            $delAttStmt->bind_param("i", $aid);
+            $delAttStmt->execute();
+            $delAttStmt->close();
 
-            $delAttStmt = $pdo->prepare("DELETE FROM attendance WHERE aid = ?");
-            $delAttStmt->execute([$aid]);
+            $delActStmt = $conn->prepare("DELETE FROM activity WHERE aid = ?");
+            $delActStmt->bind_param("i", $aid);
+            $delActStmt->execute();
+            $delActStmt->close();
 
-            $delActStmt = $pdo->prepare("DELETE FROM activity WHERE aid = ?");
-            $delActStmt->execute([$aid]);
-
-            $pdo->commit();
+            $conn->commit();
             echo json_encode(['status' => 'success']);
-        } catch (PDOException $e) {
-            $pdo->rollBack();
+        } catch (Exception $e) {
+            $conn->rollback();
             echo json_encode(['status' => 'error', 'message' => $e->getMessage()]);
         }
         exit();
     }
 }
 
-$orgStmt = $pdo->query("SELECT oid, oname, tid FROM organisations ORDER BY oid ASC");
-$organizations = $orgStmt->fetchAll();
+$organizations = [];
+$orgRes = $conn->query("SELECT oid, oname, tid FROM organisations ORDER BY oid ASC");
+if ($orgRes) {
+    $organizations = $orgRes->fetch_all(MYSQLI_ASSOC);
+}
 
-$stmt = $pdo->query("SELECT aid, oid, aname, date, room, timeslot FROM activity");
-$dbActivities = $stmt->fetchAll();
+$dbActivities = [];
+$actRes = $conn->query("SELECT aid, oid, aname, date, room, timeslot FROM activity");
+if ($actRes) {
+    $dbActivities = $actRes->fetch_all(MYSQLI_ASSOC);
+}
 
 $events = array_map(function($act) {
     return [
@@ -254,7 +264,6 @@ $events = array_map(function($act) {
 
         main { flex: 1; padding: 1.5rem; background-color: #d6e6f9; height: 100%; overflow: hidden; display: flex; flex-direction: column; }
 
-        /* Original width maintained (max-width: 1000px) with viewport-fitted height */
         .calendar-container {
             max-width: 1000px;
             width: 100%;
