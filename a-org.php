@@ -13,22 +13,6 @@ if (!isset($_SESSION['uid']) && !isset($_SESSION['user_id'])) {
     exit();
 }
 
-// PHP 8.5 Deprecation Fix for SSL Verification Attribute
-$sslVerifyAttr = class_exists('Pdo\\Mysql') ? \Pdo\Mysql::ATTR_SSL_VERIFY_SERVER_CERT : PDO::MYSQL_ATTR_SSL_VERIFY_SERVER_CERT;
-
-try {
-    $port = $port ?? 25060; 
-    $dsn = "mysql:host=$host;port=$port;dbname=$dbname;charset=utf8mb4";
-    $options = [
-        PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-        PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-        $sslVerifyAttr => false
-    ];
-    $pdo = new PDO($dsn, $username, $password, $options);
-} catch (PDOException $e) {
-    die("Database Connection Failed: " . $e->getMessage());
-}
-
 // -------------------------------------------------------------------------
 // 1. BACKEND HANDLERS (AJAX & PDF GENERATION)
 // -------------------------------------------------------------------------
@@ -48,43 +32,47 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $sat      = isset($_POST['opt_satisfactory']) ? true : false;
         $satOrgs  = $_POST['opt_satisfactory_orgs'] ?? [];
 
-        $stmt = $pdo->prepare("SELECT * FROM users WHERE uid = :uid AND LOWER(role) = 'student'");
-        $stmt->execute([':uid' => $uid]);
-        $student = $stmt->fetch();
+        $stmt = $conn->prepare("SELECT * FROM users WHERE uid = ? AND LOWER(role) = 'student'");
+        $stmt->bind_param("s", $uid);
+        $stmt->execute();
+        $student = $stmt->get_result()->fetch_assoc();
 
         if (!$student) {
             die("Error: PDF report generation is strictly restricted to users with the 'student' role.");
         }
 
-        $orgStmt = $pdo->prepare("
+        $orgStmt = $conn->prepare("
             SELECT o.oid, o.oname 
             FROM membership m 
             JOIN organisations o ON m.oid = o.oid 
-            WHERE m.sid = :uid
+            WHERE m.sid = ?
         ");
-        $orgStmt->execute([':uid' => $uid]);
-        $enrolledOrgsRaw = $orgStmt->fetchAll();
+        $orgStmt->bind_param("s", $uid);
+        $orgStmt->execute();
+        $enrolledOrgsRaw = $orgStmt->get_result()->fetch_all(MYSQLI_ASSOC);
         $orgMap = [];
         foreach ($enrolledOrgsRaw as $o) {
             $orgMap[$o['oid']] = $o['oname'];
         }
         $allOrgIds = array_keys($orgMap);
 
-        $getOrgActivities = function($oid) use ($pdo, $start, $end) {
+        $getOrgActivities = function($oid) use ($conn, $start, $end) {
             $actQuery = "
                 SELECT a.aid, a.oid, a.aname, a.date, a.room 
                 FROM activity a 
                 WHERE a.oid = ? AND a.date BETWEEN ? AND ?
                 ORDER BY a.date ASC
             ";
-            $actStmt = $pdo->prepare($actQuery);
-            $actStmt->execute([$oid, $start, $end]);
-            return $actStmt->fetchAll();
+            $actStmt = $conn->prepare($actQuery);
+            $actStmt->bind_param("sss", $oid, $start, $end);
+            $actStmt->execute();
+            return $actStmt->get_result()->fetch_all(MYSQLI_ASSOC);
         };
 
-        $getAllActivities = function($targetOids) use ($pdo, $start, $end) {
+        $getAllActivities = function($targetOids) use ($conn, $start, $end) {
             if (empty($targetOids)) return [];
             $placeholders = implode(',', array_fill(0, count($targetOids), '?'));
+            $types = str_repeat('s', count($targetOids)) . 'ss';
             $actQuery = "
                 SELECT a.aid, a.oid, a.aname, a.date, a.room 
                 FROM activity a 
@@ -92,9 +80,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 ORDER BY a.date ASC
             ";
             $params = array_merge($targetOids, [$start, $end]);
-            $actStmt = $pdo->prepare($actQuery);
-            $actStmt->execute($params);
-            return $actStmt->fetchAll();
+            $actStmt = $conn->prepare($actQuery);
+            $actStmt->bind_param($types, ...$params);
+            $actStmt->execute();
+            return $actStmt->get_result()->fetch_all(MYSQLI_ASSOC);
         };
 
         $toRoman = function($num) {
@@ -107,13 +96,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         $attendanceMap = [];
         if (!empty($allOrgIds)) {
-            $attStmt = $pdo->prepare("
+            $attStmt = $conn->prepare("
                 SELECT aid, attend, rate, `s.rate` 
                 FROM attendance 
-                WHERE sid = :uid
+                WHERE sid = ?
             ");
-            $attStmt->execute([':uid' => $uid]);
-            while ($row = $attStmt->fetch()) {
+            $attStmt->bind_param("s", $uid);
+            $attStmt->execute();
+            $attRes = $attStmt->get_result();
+            while ($row = $attRes->fetch_assoc()) {
                 $attendanceMap[$row['aid']] = $row;
             }
         }
@@ -439,14 +430,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 echo json_encode(['success' => false, 'message' => 'UID required for deletion.']);
                 exit;
             }
+            $conn->begin_transaction();
             try {
-                $pdo->beginTransaction();
-                $pdo->prepare("DELETE FROM membership WHERE sid = :uid")->execute([':uid' => $uid]);
-                $pdo->prepare("DELETE FROM users WHERE uid = :uid")->execute([':uid' => $uid]);
-                $pdo->commit();
+                $stmt1 = $conn->prepare("DELETE FROM membership WHERE sid = ?");
+                $stmt1->bind_param("s", $uid);
+                $stmt1->execute();
+
+                $stmt2 = $conn->prepare("DELETE FROM users WHERE uid = ?");
+                $stmt2->bind_param("s", $uid);
+                $stmt2->execute();
+
+                $conn->commit();
                 echo json_encode(['success' => true, 'message' => 'User deleted successfully.']);
-            } catch (PDOException $e) {
-                $pdo->rollBack();
+            } catch (Exception $e) {
+                $conn->rollback();
                 echo json_encode(['success' => false, 'message' => 'Delete failed: ' . $e->getMessage()]);
             }
             exit;
@@ -458,26 +455,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 echo json_encode(['success' => false, 'message' => 'No user entries provided.']);
                 exit;
             }
+            $conn->begin_transaction();
             try {
-                $pdo->beginTransaction();
-                $stmt = $pdo->prepare("INSERT INTO users (uid, name, class, cid, email, password, role) VALUES (:uid, :name, :class, :cid, :email, :password, :role)");
+                $stmt = $conn->prepare("INSERT INTO users (uid, name, class, cid, email, password, role) VALUES (?, ?, ?, ?, ?, ?, ?)");
                 
                 foreach ($newUsers as $u) {
                     $hashedPwd = !empty($u['password']) ? password_hash($u['password'], PASSWORD_DEFAULT) : '';
-                    $stmt->execute([
-                        ':uid'      => $u['uid'],
-                        ':name'     => $u['name'],
-                        ':class'    => $u['class'],
-                        ':cid'      => $u['cid'],
-                        ':email'    => $u['email'],
-                        ':password' => $hashedPwd,
-                        ':role'     => $u['role']
-                    ]);
+                    $stmt->bind_param("sssssss", $u['uid'], $u['name'], $u['class'], $u['cid'], $u['email'], $hashedPwd, $u['role']);
+                    $stmt->execute();
                 }
-                $pdo->commit();
+                $conn->commit();
                 echo json_encode(['success' => true, 'message' => 'Users added successfully.']);
-            } catch (PDOException $e) {
-                $pdo->rollBack();
+            } catch (Exception $e) {
+                $conn->rollback();
                 echo json_encode(['success' => false, 'message' => 'Batch insert failed: ' . $e->getMessage()]);
             }
             exit;
@@ -497,54 +487,43 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             exit;
         }
 
+        $conn->begin_transaction();
         try {
-            $pdo->beginTransaction();
-
             if (!empty($plainPwd)) {
                 $hashedPassword = password_hash($plainPwd, PASSWORD_DEFAULT);
-                $updateUserStmt = $pdo->prepare("
+                $updateUserStmt = $conn->prepare("
                     UPDATE users 
-                    SET name = :name, class = :class, cid = :cid, email = :email, password = :password, role = :role 
-                    WHERE uid = :uid
+                    SET name = ?, class = ?, cid = ?, email = ?, password = ?, role = ? 
+                    WHERE uid = ?
                 ");
-                $updateUserStmt->execute([
-                    ':name'     => $name,
-                    ':class'    => $class,
-                    ':cid'      => $cid,
-                    ':email'    => $email,
-                    ':password' => $hashedPassword,
-                    ':role'     => $role,
-                    ':uid'      => $uid
-                ]);
+                $updateUserStmt->bind_param("sssssss", $name, $class, $cid, $email, $hashedPassword, $role, $uid);
+                $updateUserStmt->execute();
             } else {
-                $updateUserStmt = $pdo->prepare("
+                $updateUserStmt = $conn->prepare("
                     UPDATE users 
-                    SET name = :name, class = :class, cid = :cid, email = :email, role = :role 
-                    WHERE uid = :uid
+                    SET name = ?, class = ?, cid = ?, email = ?, role = ? 
+                    WHERE uid = ?
                 ");
-                $updateUserStmt->execute([
-                    ':name'     => $name,
-                    ':class'    => $class,
-                    ':cid'      => $cid,
-                    ':email'    => $email,
-                    ':role'     => $role,
-                    ':uid'      => $uid
-                ]);
+                $updateUserStmt->bind_param("ssssss", $name, $class, $cid, $email, $role, $uid);
+                $updateUserStmt->execute();
             }
 
-            $pdo->prepare("DELETE FROM membership WHERE sid = :uid")->execute([':uid' => $uid]);
+            $delStmt = $conn->prepare("DELETE FROM membership WHERE sid = ?");
+            $delStmt->bind_param("s", $uid);
+            $delStmt->execute();
 
             if (!empty($orgs)) {
-                $insertMemStmt = $pdo->prepare("INSERT INTO membership (sid, oid) VALUES (:uid, :oid)");
+                $insertMemStmt = $conn->prepare("INSERT INTO membership (sid, oid) VALUES (?, ?)");
                 foreach ($orgs as $oid) {
-                    $insertMemStmt->execute([':uid' => $uid, ':oid' => $oid]);
+                    $insertMemStmt->bind_param("ss", $uid, $oid);
+                    $insertMemStmt->execute();
                 }
             }
 
-            $pdo->commit();
+            $conn->commit();
             echo json_encode(['success' => true, 'message' => 'User updated successfully.']);
-        } catch (PDOException $e) {
-            $pdo->rollBack();
+        } catch (Exception $e) {
+            $conn->rollback();
             echo json_encode(['success' => false, 'message' => 'Database error: ' . $e->getMessage()]);
         }
         exit;
@@ -555,52 +534,53 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 // 2. PAGE DATA FETCHING
 // -------------------------------------------------------------------------
 $allOrganisations = [];
-try {
-    $orgStmt = $pdo->query("SELECT oid, oname FROM organisations ORDER BY oname ASC");
-    $allOrganisations = $orgStmt->fetchAll();
-} catch (PDOException $e) {}
+$orgRes = $conn->query("SELECT oid, oname FROM organisations ORDER BY oname ASC");
+if ($orgRes) {
+    $allOrganisations = $orgRes->fetch_all(MYSQLI_ASSOC);
+}
 
 $existingUsersData = [];
-try {
-    $exStmt = $pdo->query("SELECT class, cid FROM users WHERE class IS NOT NULL AND cid IS NOT NULL");
-    $existingUsersData = $exStmt->fetchAll();
-} catch (PDOException $e) {}
+$exRes = $conn->query("SELECT class, cid FROM users WHERE class IS NOT NULL AND cid IS NOT NULL");
+if ($exRes) {
+    $existingUsersData = $exRes->fetch_all(MYSQLI_ASSOC);
+}
 
 $classes = [];
-try {
-    $classStmt = $pdo->query("SELECT DISTINCT class FROM users WHERE class IS NOT NULL AND class != '' ORDER BY class ASC");
-    $classes = $classStmt->fetchAll(PDO::FETCH_COLUMN);
-} catch (PDOException $e) {}
+$classRes = $conn->query("SELECT DISTINCT class FROM users WHERE class IS NOT NULL AND class != '' ORDER BY class ASC");
+if ($classRes) {
+    while ($row = $classRes->fetch_row()) {
+        $classes[] = $row[0];
+    }
+}
 
 $users = [];
-try {
-    $query = "
-        SELECT 
-            u.uid, 
-            u.name, 
-            u.class, 
-            u.cid,
-            u.email,
-            u.role,
-            CASE 
-                WHEN LOWER(u.role) = 'student' THEN (
-                    SELECT GROUP_CONCAT(CONCAT(o.oid, ':', o.oname) SEPARATOR '||')
-                    FROM membership m
-                    JOIN organisations o ON m.oid = o.oid
-                    WHERE m.sid = u.uid
-                )
-                ELSE (
-                    SELECT GROUP_CONCAT(CONCAT(o.oid, ':', o.oname) SEPARATOR '||')
-                    FROM organisations o
-                    WHERE o.tid = u.uid
-                )
-            END AS org_data
-        FROM users u
-        ORDER BY u.uid ASC
-    ";
-    $stmt = $pdo->query($query);
-    $rawUsers = $stmt->fetchAll();
-
+$query = "
+    SELECT 
+        u.uid, 
+        u.name, 
+        u.class, 
+        u.cid,
+        u.email,
+        u.role,
+        CASE 
+            WHEN LOWER(u.role) = 'student' THEN (
+                SELECT GROUP_CONCAT(CONCAT(o.oid, ':', o.oname) SEPARATOR '||')
+                FROM membership m
+                JOIN organisations o ON m.oid = o.oid
+                WHERE m.sid = u.uid
+            )
+            ELSE (
+                SELECT GROUP_CONCAT(CONCAT(o.oid, ':', o.oname) SEPARATOR '||')
+                FROM organisations o
+                WHERE o.tid = u.uid
+            )
+        END AS org_data
+    FROM users u
+    ORDER BY u.uid ASC
+";
+$stmt = $conn->query($query);
+if ($stmt) {
+    $rawUsers = $stmt->fetch_all(MYSQLI_ASSOC);
     foreach ($rawUsers as $row) {
         $orgList = [];
         if (!empty($row['org_data'])) {
@@ -616,7 +596,7 @@ try {
         unset($row['org_data']);
         $users[] = $row;
     }
-} catch (PDOException $e) {}
+}
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -1999,7 +1979,6 @@ try {
             for (let i = 0; i < qty; i++) {
                 const rowDiv = document.createElement('div');
                 rowDiv.className = 'add-row-item';
-                // 'monitor' option removed from dropdown list below
                 rowDiv.innerHTML = `
                     <input type="text" placeholder="UID" class="new-uid" required>
                     <input type="text" placeholder="Name" class="new-name" required>
