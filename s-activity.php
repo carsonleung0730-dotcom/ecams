@@ -1,7 +1,6 @@
 <?php
-// Database configuration and session parameters loaded FIRST to avoid warnings
+// Database configuration and session parameters
 require_once 'db.php';   
-
 session_start();
 
 if (!isset($_SESSION['role']) \vert{}\vert{} strtolower($_SESSION['role']) !== 'student') {
@@ -13,40 +12,50 @@ if (!isset($_SESSION['uid']) && !isset($_SESSION['user_id'])) {
     exit();
 }
 
+// Enable error reporting to catch issues immediately
+ini_set('display_errors', 1);
+error_reporting(E_ALL);
+
 $studentUid =$_SESSION['uid'] ?? $_SESSION['user_id'] ?? $_SESSION['id'] ?? 2;
 
-// Fetch organizations where the logged-in student is a member using MySQLi
-$managedOrgIds = [];
-if (isset($conn) &&$conn instanceof mysqli) {
-    $mOrgStmt =$conn->prepare("
+$managedOrgIds = [];$dbActivities = [];
+
+if (isset($conn) && $conn instanceof mysqli) { // 1. Fetch student organizations with explicit error handling$queryOrg = "
         SELECT o.oid, o.oname 
         FROM membership m 
         JOIN organisations o ON m.oid = o.oid 
         WHERE m.sid = ? 
         ORDER BY o.oname ASC
-    ");
-    if ($mOrgStmt) {$mOrgStmt->bind_param("s", $studentUid);$mOrgStmt->execute();
-        $mOrgRes =$mOrgStmt->get_result();
-        while ($row =$mOrgRes->fetch_assoc()) {
-            $managedOrgIds[] = intval($row['oid']);
-        }
-        $mOrgStmt->close();
+    ";
+    
+    $mOrgStmt = $conn->prepare($queryOrg);
+    if (!$mOrgStmt) {
+        die("SQL Prepare Error (Organisations): " . $conn->error . "<br>Check if your table names ('membership', 'organisations') or columns ('oid', 'sid') match your database.");
     }
-}
+    
+    $mOrgStmt->bind_param("s", $studentUid);$mOrgStmt->execute();
+    $mOrgRes =$mOrgStmt->get_result();
+    while ($row =$mOrgRes->fetch_assoc()) {
+        $managedOrgIds[] = intval($row['oid']);
+    }
+    $mOrgStmt->close();
 
-// Fetch activities ONLY for the organizations this student belongs to
-$dbActivities = [];
-if (isset($conn) && $conn instanceof mysqli && !empty($managedOrgIds)) {
-    $idsString = implode(',',$managedOrgIds);
-    $stmt =$conn->query("
-        SELECT a.aid, a.oid, a.aname, a.date, a.room, a.timeslot, o.oname 
-        FROM activity a 
-        LEFT JOIN organisations o ON a.oid = o.oid 
-        WHERE a.oid IN ($idsString)
-    ");
-    if ($stmt) {
+    // 2. Fetch activities for those organizations
+    if (!empty($managedOrgIds)) {$idsString = implode(',', $managedOrgIds);$queryAct = "
+            SELECT a.aid, a.oid, a.aname, a.date, a.room, a.timeslot, o.oname 
+            FROM activity a 
+            LEFT JOIN organisations o ON a.oid = o.oid 
+            WHERE a.oid IN ($idsString)
+        ";
+        
+        $stmt = $conn->query($queryAct);
+        if (!$stmt) {
+            die("SQL Query Error (Activities): " . $conn->error);
+        }
         $dbActivities =$stmt->fetch_all(MYSQLI_ASSOC);
     }
+} else {
+    die("Database connection error: \$conn variable is missing or not a MySQLi instance.");
 }
 
 $events = array_map(function($act) {
@@ -80,10 +89,7 @@ $events = array_map(function($act) {
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
         
-        html, body {
-            height: 100%;
-            overflow: hidden;
-        }
+        html, body { height: 100%; overflow: hidden; }
 
         body {
             font-family: system-ui, -apple-system, sans-serif;
@@ -146,7 +152,6 @@ $events = array_map(function($act) {
         .fc-daygrid-day.has-event:hover { outline: 4px double #e99090 !important; outline-offset: -4px; }
 
         .calendar-active-mode-red .fc-daygrid-day:not(.fc-day-past) { background-color: #fff1f2 !important; }
-        .calendar-active-mode-blue .fc-daygrid-day:not(.fc-day-past) { background-color: #f0fdf4 !important; }
 
         .calendar-active-mode-red .fc-daygrid-day.clicked-0:not(.fc-day-past) { background-color: #ea580c !important; }
         .calendar-active-mode-red .fc-daygrid-day.clicked-0:not(.fc-day-past) .fc-daygrid-day-number { color: #ffffff !important; font-weight: 700; }
@@ -157,25 +162,12 @@ $events = array_map(function($act) {
         .calendar-active-mode-red .fc-daygrid-day.clicked-3:not(.fc-day-past) { background-color: #fffbe4 !important; }
         .calendar-active-mode-red .fc-daygrid-day.clicked-3:not(.fc-day-past) .fc-daygrid-day-number { color: #9f1239 !important; font-weight: 500; }
 
-        .calendar-active-mode-blue .fc-daygrid-day.clicked-0:not(.fc-day-past) { background-color: #0284c7 !important; }
-        .calendar-active-mode-blue .fc-daygrid-day.clicked-0:not(.fc-day-past) .fc-daygrid-day-number { color: #ffffff !important; font-weight: 700; }
-        .calendar-active-mode-blue .fc-daygrid-day.clicked-1:not(.fc-day-past) { background-color: #38bdf8 !important; }
-        .calendar-active-mode-blue .fc-daygrid-day.clicked-1:not(.fc-day-past) .fc-daygrid-day-number { color: #ffffff !important; font-weight: 600; }
-        .calendar-active-mode-blue .fc-daygrid-day.clicked-2:not(.fc-day-past) { background-color: #6ee7b7 !important; }
-        .calendar-active-mode-blue .fc-daygrid-day.clicked-2:not(.fc-day-past) .fc-daygrid-day-number { color: #064e3b !important; font-weight: 600; }
-        .calendar-active-mode-blue .fc-daygrid-day.clicked-3:not(.fc-day-past) { background-color: #d1fae5 !important; }
-        .calendar-active-mode-blue .fc-daygrid-day.clicked-3:not(.fc-day-past) .fc-daygrid-day-number { color: #065f46 !important; font-weight: 500; }
-
-        .calendar-active-mode-blue .fc-daygrid-day.has-event:not(.fc-day-past),
-        .calendar-active-mode-blue .fc-daygrid-day.has-event[class*="clicked-"]:not(.fc-day-past),
         .calendar-active-mode-red .fc-daygrid-day.has-event:not(.clicked-0):not(.fc-day-past),
         .calendar-active-mode-red .fc-daygrid-day.has-event:not(.clicked-0)[class*="clicked-"]:not(.fc-day-past) {
             background-color: #fecdd3 !important;
             z-index: 4 !important;
         }
 
-        .calendar-active-mode-blue .fc-daygrid-day.has-event:not(.fc-day-past) .fc-daygrid-day-number,
-        .calendar-active-mode-blue .fc-daygrid-day.has-event[class*="clicked-"]:not(.fc-day-past) .fc-daygrid-day-number,
         .calendar-active-mode-red .fc-daygrid-day.has-event:not(.clicked-0):not(.fc-day-past) .fc-daygrid-day-number,
         .calendar-active-mode-red .fc-daygrid-day.has-event:not(.clicked-0)[class*="clicked-"]:not(.fc-day-past) .fc-daygrid-day-number {
             color: #9f1239 !important;
@@ -202,25 +194,12 @@ $events = array_map(function($act) {
         main { flex: 1; padding: 1.5rem; background-color: #d6e6f9; height: 100%; overflow: hidden; display: flex; flex-direction: column; }
 
         .calendar-container {
-            max-width: 1000px;
-            width: 100%;
-            height: 100%;
-            margin: 0;
-            padding: 16px;
-            background: #ffffff;
-            border-radius: 12px;
-            box-shadow: 0 4px 12px rgba(37, 99, 235, 0.08);
-            border: 1px solid #dbeafe;
-            display: flex;
-            flex-direction: column;
-            box-sizing: border-box;
-            overflow: hidden;
+            max-width: 1000px; width: 100%; height: 100%; margin: 0; padding: 16px;
+            background: #ffffff; border-radius: 12px; box-shadow: 0 4px 12px rgba(37, 99, 235, 0.08);
+            border: 1px solid #dbeafe; display: flex; flex-direction: column; box-sizing: border-box; overflow: hidden;
         }
 
-        #ecams-calendar {
-            flex: 1;
-            min-height: 0;
-        }
+        #ecams-calendar { flex: 1; min-height: 0; }
 
         :root {
             --fc-border-color: #e2e8f0; --fc-button-bg-color: #2563eb; --fc-button-border-color: #2563eb;
@@ -320,8 +299,6 @@ $events = array_map(function($act) {
         </main>
 
         <div class="activity-details-panel" id="activityPanel">
-            <div class="resize-handle-bl" id="resizeHandleBL"></div>
-
             <div class="panel-header" id="panelHeader">
                 <div class="header-tabs">
                     <button type="button" class="tab-btn active" id="tabExisting">Organisation Activities (Read-Only)</button>
@@ -416,7 +393,7 @@ $events = array_map(function($act) {
                 document.querySelectorAll('.fc-daygrid-day').forEach(function(dayEl) {
                     dayEl.classList.remove('clicked-0', 'clicked-1', 'clicked-2', 'clicked-3');
                 });
-                calendarEl.classList.remove('calendar-active-mode-red', 'calendar-active-mode-blue');
+                calendarEl.classList.remove('calendar-active-mode-red');
                 currentSelectedDate = null;
             }
 
@@ -457,8 +434,6 @@ $events = array_map(function($act) {
                 dateClick: function(info) {
                     var clickedCell = info.dayEl;
                     var clickedDateStr = info.dateStr;
-                    var todayStr = getTodayDateStr();
-                    var isPast = clickedDateStr < todayStr;
 
                     currentDayActivities = calendar.getEvents().filter(function(e) {
                         return e.startStr.split('T')[0] === clickedDateStr;
@@ -480,15 +455,10 @@ $events = array_map(function($act) {
 
                     calendarEl.classList.add('calendar-active-mode-red');
                     openPanelWithActivityList(currentDayActivities);
-                    if (!isPast) {
-                        applyHeatmapSpread(clickedDateStr);
-                    }
                 },
 
                 eventClick: function(info) {
                     var eventDateStr = info.event.startStr.split('T')[0];
-                    var todayStr = getTodayDateStr();
-                    var isPast = eventDateStr < todayStr;
 
                     unselectCalendarDate();
                     currentSelectedDate = eventDateStr;
@@ -496,11 +466,7 @@ $events = array_map(function($act) {
                         return e.startStr.split('T')[0] === currentSelectedDate;
                     });
 
-                    if (!isPast) {
-                        calendarEl.classList.add('calendar-active-mode-red');
-                        applyHeatmapSpread(currentSelectedDate);
-                    }
-                    
+                    calendarEl.classList.add('calendar-active-mode-red');
                     openPanelWithActivityList(currentDayActivities);
                     var clickedEvt = currentDayActivities.find(e => e.id == info.event.id);
                     if (clickedEvt) {
@@ -510,35 +476,6 @@ $events = array_map(function($act) {
             });
 
             calendar.render();
-
-            function applyHeatmapSpread(clickedDateStr) {
-                var baseDate = new Date(clickedDateStr + 'T00:00:00');
-                var baseDayOfWeek = baseDate.getDay();
-
-                for (var rowOffset = -3; rowOffset <= 3; rowOffset++) {
-                    for (var colOffset = -3; colOffset <= 3; colOffset++) {
-                        var targetCol = baseDayOfWeek + colOffset;
-                        if (targetCol < 0 || targetCol > 6) continue;
-
-                        var totalDaysOffset = (rowOffset * 7) + colOffset;
-                        var targetDate = new Date(baseDate);
-                        targetDate.setDate(targetDate.getDate() + totalDaysOffset);
-
-                        var year = targetDate.getFullYear();
-                        var month = String(targetDate.getMonth() + 1).padStart(2, '0');
-                        var day = String(targetDate.getDate()).padStart(2, '0');
-                        var dateStr = year + '-' + month + '-' + day;
-
-                        var targetEl = document.querySelector('.fc-daygrid-day[data-date="' + dateStr + '"]');
-                        if (targetEl && !targetEl.classList.contains('fc-day-past')) {
-                            var distance = Math.max(Math.abs(rowOffset), Math.abs(colOffset));
-                            if (distance <= 3) {
-                                targetEl.classList.add('clicked-' + distance);
-                            }
-                        }
-                    }
-                }
-            }
 
             function markCellsWithEvents() {
                 document.querySelectorAll('.fc-daygrid-day').forEach(function(el) {
@@ -560,7 +497,6 @@ $events = array_map(function($act) {
 
             function openPanelWithActivityList(activitiesList) {
                 resetPanelPosition();
-
                 activityCardsContainer.innerHTML = '';
                 
                 activitiesList.forEach(function(evt) {
