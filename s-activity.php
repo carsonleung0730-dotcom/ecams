@@ -1,4 +1,8 @@
 <?php
+// Force error display to catch any hidden syntax issues immediately
+ini_set('display_errors', 1);
+error_reporting(E_ALL);
+
 // Database configuration and session parameters
 require_once 'db.php';   
 session_start();
@@ -14,7 +18,7 @@ if (!isset($_SESSION['uid']) && !isset($_SESSION['user_id'])) {
 
 $studentUid =$_SESSION['uid'] ?? $_SESSION['user_id'] ?? $_SESSION['id'] ?? 2;
 
-// Fetch organizations where the logged-in student is a member using exact column names
+// 1. Fetch organizations where the student is a member using safe MySQLi
 $managedOrgIds = [];
 if (isset($conn) &&$conn instanceof mysqli) {
     $mOrgStmt =$conn->prepare("
@@ -33,33 +37,35 @@ if (isset($conn) &&$conn instanceof mysqli) {
     }
 }
 
-// Fetch activities ONLY for the organizations this student belongs to
+// 2. Fetch activities safely using a standard while loop (guaranteed to work across all PHP servers)
 $dbActivities = [];
 if (isset($conn) && $conn instanceof mysqli && !empty($managedOrgIds)) {
     $idsString = implode(',',$managedOrgIds);
-    $stmt =$conn->query("
+    $result =$conn->query("
         SELECT a.aid, a.oid, a.aname, a.date, a.room, a.timeslot, o.oname 
         FROM activity a 
         LEFT JOIN organisations o ON a.oid = o.oid 
         WHERE a.oid IN ($idsString)
     ");
-    if ($stmt) {
-        $dbActivities =$stmt->fetch_all(MYSQLI_ASSOC);
+    if ($result) {
+        while ($row =$result->fetch_assoc()) {
+            $dbActivities[] =$row;
+        }
     }
 }
 
 $events = array_map(function($act) {
     return [
-        'id' => $act['aid'],
-        'title' => $act['aname'],
-        'start' => $act['date'],
+        'id' => $act['aid'] ?? '',
+        'title' => $act['aname'] ?? 'Untitled',
+        'start' => $act['date'] ?? date('Y-m-d'),
         'extendedProps' => [
-            'aid' => $act['aid'],
-            'oid' => $act['oid'],
+            'aid' => $act['aid'] ?? '',
+            'oid' => $act['oid'] ?? '',
             'oname' => $act['oname'] ?? 'Unknown Organisation',
-            'aname' => $act['aname'],
-            'date' => $act['date'],
-            'room' => $act['room'],
+            'aname' => $act['aname'] ?? '',
+            'date' => $act['date'] ?? '',
+            'room' => $act['room'] ?? '',
             'timeslot' => $act['timeslot'] ?? 'Lunch Recess',
             'isManaged' => true
         ]
@@ -207,12 +213,6 @@ $events = array_map(function($act) {
             border-radius: 8px; z-index: 1000; display: none; flex-direction: column; resize: both; overflow: hidden; box-sizing: border-box;
         }
         .activity-details-panel.active { display: flex; }
-
-        .resize-handle-bl { position: absolute; left: 0; bottom: 0; width: 16px; height: 16px; cursor: nesw-resize; z-index: 1100; }
-        .resize-handle-bl::after {
-            content: ''; position: absolute; left: 3px; bottom: 3px; width: 6px; height: 6px;
-            border-left: 2px solid #94a3b8; border-bottom: 2px solid #94a3b8;
-        }
 
         .panel-header { padding: 0.75rem 1rem; background-color: #f8fafc; border-bottom: 2px solid #e2e8f0; display: flex; justify-content: space-between; align-items: center; cursor: move; user-select: none; }
         .header-tabs { display: flex; align-items: center; gap: 8px; font-size: 0.95rem; font-weight: 700; }
@@ -500,8 +500,7 @@ $events = array_map(function($act) {
                     var subEl = document.createElement('div');
                     subEl.className = 'activity-card-sub';
                     var orgName = evt.extendedProps.oname || 'Unknown Organisation';
-                    subSubText = 'Org: ' + orgName + ' | ' + (evt.extendedProps.timeslot || 'Lunch Recess');
-                    subEl.textContent = subSubText;
+                    subEl.textContent = 'Org: ' + orgName + ' | ' + (evt.extendedProps.timeslot || 'Lunch Recess');
 
                     card.appendChild(titleEl);
                     card.appendChild(subEl);
