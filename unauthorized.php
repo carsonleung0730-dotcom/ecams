@@ -53,6 +53,12 @@ session_start();
     </style>
 </head>
 <body>
+    <pre>
+<?php
+echo "Current Session Contents:\n";
+print_r($_SESSION);
+?>
+</pre>
     <div class="container">
         <h1>DONT DREAM OF SNEAKING INTO THIS CONFIDENTIAL SITE WHEN YOU ARE NOT AUTHORIZED U SNEAKY LITTLE PRICLK</h1>
         <a href="logout.php" class="btn-redirect">i know my mistake now and i am so ugly</a>
