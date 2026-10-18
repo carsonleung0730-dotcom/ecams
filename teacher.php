@@ -1,39 +1,40 @@
 <?php
+// Database configuration and session parameters loaded FIRST to avoid warnings
+require_once 'db.php';   
+
 session_start();
 
-require_once 'db.php';
 if (!isset($_SESSION['role']) || strtolower($_SESSION['role']) !== 'teacher') {
     // Redirect unauthorized users to an error page or their respective dashboard
     header('Location: unauthorized.php');
     exit();
 }
 if (!isset($_SESSION['uid']) && !isset($_SESSION['user_id'])) {
-    header('Location: login.php');
+    header('Location: shit.php');
     exit();
-}
-try {
-    $pdo = new PDO("mysql:host=$host;dbname=$dbname;charset=utf8mb4", $username, $password, [
-        PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-        PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC
-    ]);
-} catch (PDOException $e) {
-    die("Database Connection Failed: " . $e->getMessage());
 }
 
 // Retrieve logged-in teacher identifier from session
 $teacherUid = $_SESSION['uid'] ?? $_SESSION['user_id'] ?? $_SESSION['id'] ?? 1;
 
 // Fetch teacher account details
-$stmt = $pdo->prepare("SELECT uid, name, email, role, class, cid FROM users WHERE uid = ?");
-$stmt->execute([$teacherUid]);
-$userInfo = $stmt->fetch() ?: [
-    'uid' => $teacherUid,
-    'name' => 'Teacher User',
-    'email' => 'teacher@ecams.local',
-    'role' => 'teacher',
-    'class' => 'Staff',
-    'cid' => 'N/A'
-];
+$stmt = $conn->prepare("SELECT uid, name, email, role, class, cid FROM users WHERE uid = ?");
+$stmt->bind_param("s", $teacherUid);
+$stmt->execute();
+$res = $stmt->get_result();
+$userInfo = $res->fetch_assoc();
+$stmt->close();
+
+if (!$userInfo) {
+    $userInfo = [
+        'uid' => $teacherUid,
+        'name' => 'Teacher User',
+        'email' => 'teacher@ecams.local',
+        'role' => 'teacher',
+        'class' => 'Staff',
+        'cid' => 'N/A'
+    ];
+}
 
 $monitorAlerts = [];
 $debugActivitiesCount = 0;
@@ -41,17 +42,20 @@ $debugActivitiesCount = 0;
 try {
     // Teachers automatically manage organizations where tid matches their uid (or via monitor table)
     // Here we check organizations managed by this teacher (tid = teacherUid) and their activities
-    $alertStmt = $pdo->prepare("
+    $alertStmt = $conn->prepare("
         SELECT a.aid, a.aname, a.date, a.timeslot, o.oname
         FROM organisations o
         JOIN activity a ON o.oid = a.oid
         WHERE o.tid = ?
         ORDER BY a.date ASC
     ");
-    $alertStmt->execute([$teacherUid]);
-    $managedActivities = $alertStmt->fetchAll();
-    $debugActivitiesCount = count($managedActivities);
+    $alertStmt->bind_param("s", $teacherUid);
+    $alertStmt->execute();
+    $alertRes = $alertStmt->get_result();
+    $managedActivities = $alertRes->fetch_all(MYSQLI_ASSOC);
+    $alertStmt->close();
 
+    $debugActivitiesCount = count($managedActivities);
     $currentTime = new DateTime('now');
 
     foreach ($managedActivities as $act) {
@@ -277,9 +281,6 @@ try {
             </div>
         </main>
     </div>
-
-    <!-- DEBUGGER BANNER -->
-    
 
     <script>
         function updateClock() {
