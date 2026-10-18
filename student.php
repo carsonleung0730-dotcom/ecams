@@ -293,8 +293,6 @@ try {
     </div>
 
     <!-- DEBUGGER BANNER -->
-    <div style="position:fixed; bottom:5px; left:5px; background:#111; color:#0f0; font-family:monospace; font-size:11px; padding:6px 10px; z-index:9999; border-radius:4px;">
-        UID: <?= htmlspecialchars($studentUid) ?> | Monitored Activities Found: <?= $debugActivitiesCount ?> | Alerts Active: <?= count($monitorAlerts) ?>
     </div>
 
     <script>
