@@ -1,29 +1,26 @@
 <?php
+require_once 'db.php';
+
 session_start();
 
-require_once 'db.php';
-if (!isset($_SESSION['role']) || strtolower($_SESSION['role']) !== 'student') {
+if (!isset($_SESSION['role']) \vert{}\vert{} strtolower($_SESSION['role']) !== 'student') {
     // Redirect unauthorized users to an error page or their respective dashboard
     header('Location: unauthorized.php');
     exit();
 }
 if (!isset($_SESSION['uid']) && !isset($_SESSION['user_id'])) {
-    header('Location: login.php');
+    header('Location: shit.php');
     exit();
 }
-try {
-    $pdo = new PDO("mysql:host=$host;dbname=$dbname;charset=utf8mb4", $username,$password, [
-        PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-        PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC
-    ]);
-} catch (PDOException $e) {
-    die("Database Connection Failed: " . $e->getMessage());
-}
 
-// Retrieve logged-in user identifier from session
+// Retrieve logged-in user identifier from session[cite: 9]
 $loggedInIdentifier = '';
 if (!empty($_SESSION['uid'])) {
     $loggedInIdentifier =$_SESSION['uid'];
+} elseif (!empty($_SESSION['user_id'])) {
+    $loggedInIdentifier =$_SESSION['user_id'];
+} elseif (!empty($_SESSION['id'])) {
+    $loggedInIdentifier =$_SESSION['id'];
 } elseif (!empty($_SESSION['username'])) {
     $loggedInIdentifier =$_SESSION['username'];
 } elseif (!empty($_SESSION['user'])) {
@@ -31,32 +28,52 @@ if (!empty($_SESSION['uid'])) {
 } elseif (!empty($_SESSION['name'])) {
     $loggedInIdentifier =$_SESSION['name'];
 } else {
-    $loggedInIdentifier = 18; // Default fallback sample UID
+    $loggedInIdentifier = 18; // Default fallback sample UID[cite: 9]
 }
 
-// Fetch complete user details including ismonitor
+// Fetch complete user details including ismonitor using MySQLi[cite: 9]
 $userInfo = [];
 try {
-    if (is_numeric($loggedInIdentifier)) {
-        $stmt =$pdo->prepare("SELECT uid, name, email, role, class, cid, ismonitor FROM users WHERE uid = ?");
-        $stmt->execute([$loggedInIdentifier]);
-    } else {
-        $stmt =$pdo->prepare("SELECT uid, name, email, role, class, cid, ismonitor FROM users WHERE name = ? OR email = ?");
-        $stmt->execute([$loggedInIdentifier,$loggedInIdentifier]);
+    if (isset($conn) &&$conn instanceof mysqli) {
+        if (is_numeric($loggedInIdentifier)) {
+            $stmt =$conn->prepare("SELECT uid, name, email, role, class, cid, ismonitor FROM users WHERE uid = ?");
+            $stmt->bind_param("s", $loggedInIdentifier);
+        } else {
+            $stmt =$conn->prepare("SELECT uid, name, email, role, class, cid, ismonitor FROM users WHERE name = ? OR email = ?");
+            $stmt->bind_param("ss", $loggedInIdentifier,$loggedInIdentifier);
+        }
+        $stmt->execute();
+        $result =$stmt->get_result();
+        if ($row =$result->fetch_assoc()) {
+            $userInfo =$row;
+        }
+        $stmt->close();
     }
-    $userInfo =$stmt->fetch();
-} catch (PDOException $e) {$userInfo = [];
+} catch (Exception $e) {$userInfo = [];
 }
 
 $isMonitor = (!empty($userInfo['ismonitor']) &&$userInfo['ismonitor'] == 1);
 
-$orgStmt =$pdo->query("SELECT oid, oname FROM organisations ORDER BY oid ASC");
-$organizations = $orgStmt->fetchAll();$orgMap = [];
-foreach ($organizations as $org) {$orgMap[$org['oid']] =$org['oname'];
+$organizations = [];$orgMap = [];
+if (isset($conn) &&$conn instanceof mysqli) {
+    $orgResult =$conn->query("SELECT oid, oname FROM organisations ORDER BY oid ASC");
+    if ($orgResult) {
+        while ($org =$orgResult->fetch_assoc()) {
+            $organizations[] =$org;
+            $orgMap[$org['oid']] =$org['oname'];
+        }
+    }
 }
 
-$stmt =$pdo->query("SELECT aid, oid, aname, date, room, timeslot FROM activity");
-$dbActivities =$stmt->fetchAll();
+$dbActivities = [];
+if (isset($conn) &&$conn instanceof mysqli) {
+    $actResult =$conn->query("SELECT aid, oid, aname, date, room, timeslot FROM activity");
+    if ($actResult) {
+        while ($act =$actResult->fetch_assoc()) {
+            $dbActivities[] =$act;
+        }
+    }
+}
 
 $events = array_map(function($act) use ($orgMap) {$orgName = $orgMap[$act['oid']] ?? 'Unknown Organisation';
     return [
@@ -689,20 +706,20 @@ $events = array_map(function($act) use ($orgMap) {$orgName = $orgMap[$act['oid']
                 panel.classList.add('active');
             }
 
-    function showActivityDetails(eventObj) {
-        activitiesListView.style.display = 'none';
-        activityDetailsView.style.display = 'block';
-        returnBackBtn.style.display = 'inline-flex';
-        panelTitle.textContent = 'Activity Details';
+            function showActivityDetails(eventObj) {
+                activitiesListView.style.display = 'none';
+                activityDetailsView.style.display = 'block';
+                returnBackBtn.style.display = 'inline-flex';
+                panelTitle.textContent = 'Activity Details';
 
-        var props = eventObj.extendedProps;
-        document.getElementById('view_aid').textContent = props.aid || eventObj.id;
-        document.getElementById('view_org').textContent = (props.oid || '') + ' - ' + (props.orgName || 'Unknown');
-        document.getElementById('view_aname').textContent = props.aname || eventObj.title;
-        document.getElementById('view_date').textContent = props.date || eventObj.startStr.split('T')[0];
-        document.getElementById('view_room').textContent = props.room || 'N/A';
-        document.getElementById('view_timeslot').textContent = props.timeslot || 'Lunch Recess';
-    }
+                var props = eventObj.extendedProps;
+                document.getElementById('view_aid').textContent = props.aid || eventObj.id;
+                document.getElementById('view_org').textContent = (props.oid || '') + ' - ' + (props.orgName || 'Unknown');
+                document.getElementById('view_aname').textContent = props.aname || eventObj.title;
+                document.getElementById('view_date').textContent = props.date || eventObj.startStr.split('T')[0];
+                document.getElementById('view_room').textContent = props.room || 'N/A';
+                document.getElementById('view_timeslot').textContent = props.timeslot || 'Lunch Recess';
+            }
 
             returnBackBtn.addEventListener('click', function() {
                 activityDetailsView.style.display = 'none';
