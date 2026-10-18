@@ -1,10 +1,10 @@
 <?php
+require_once 'db.php';
 session_start();
 
 // Database configuration
-require_once 'db.php';   // Replace with your MySQL password
+  
 if (!isset($_SESSION['role']) || strtolower($_SESSION['role']) !== 'admin') {
-    // Redirect unauthorized users to an error page or their respective dashboard
     header('Location: unauthorized.php');
     exit();
 }
@@ -12,11 +12,17 @@ if (!isset($_SESSION['uid']) && !isset($_SESSION['user_id'])) {
     header('Location: login.php');
     exit();
 }
+
+// FIXED PDO CONNECTION WITH PORT AND DIGITALOCEAN SSL ATTRIBUTES
 try {
-    $pdo = new PDO("mysql:host=$host;dbname=$dbname;charset=utf8mb4", $username, $password, [
+    $port = $port ?? 25060; // Fallback to DigitalOcean port if not defined in db.php
+    $dsn = "mysql:host=$host;port=$port;dbname=$dbname;charset=utf8mb4";
+    $options = [
         PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-        PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC
-    ]);
+        PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+        PDO::MYSQL_ATTR_SSL_VERIFY_SERVER_CERT => false
+    ];
+    $pdo = new PDO($dsn, $username, $password, $options);
 } catch (PDOException $e) {
     die("Database Connection Failed: " . $e->getMessage());
 }
@@ -123,10 +129,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         // Build PDF text elements
         $pdfCommands = [];
         
-        // Title (Larger Font, Bold)
         $pdfCommands[] = ["font" => "F1", "size" => 16, "x" => 80, "y" => 730, "text" => "ECAMS STUDENT REPORT"];
         
-        // Listed user details (Labels bold, values regular)
         $details = [
             ["label" => "UID: ", "val" => ($student['uid'] ?? '')],
             ["label" => "Name: ", "val" => ($student['name'] ?? '')],
@@ -158,10 +162,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $hasAll = in_array('ALL', $attOrgs);
             $specificOrgs = array_diff($attOrgs, ['ALL']);
             if (empty($attOrgs)) {
-                $hasAll = true; // Default fallback if nothing selected
+                $hasAll = true;
             }
 
-            // Render separate org records first if any specific ones are chosen
             foreach ($specificOrgs as $oid) {
                 if ($y < 50) break;
                 if (!isset($orgMap[$oid])) continue;
@@ -194,7 +197,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $y -= 20;
             }
 
-            // Render combined section last if 'ALL' is checked
             if ($hasAll) {
                 if ($y >= 50) {
                     $pdfCommands[] = ["font" => "F1", "size" => 11, "x" => 50, "y" => $y, "text" => "[All Organisations]"];
@@ -390,7 +392,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
 
         $contentStream = "";
-        // Draw solid square at top left corner (X: 40, Y: 720, Width: 32, Height: 32)
         $contentStream .= "0 g 0 G 40 720 32 32 re f\n";
 
         foreach ($pdfCommands as $cmd) {
@@ -403,8 +404,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         echo "1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n";
         echo "2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n";
         echo "3 0 obj << /Type /Page /Parent 2 0 R /Resources << /Font << /F1 4 0 R /F2 5 0 R >> >> /MediaBox [0 0 612 792] /Contents 6 0 R >> endobj\n";
-        echo "4 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Courier-Bold >> endobj\n"; // F1 = Bold
-        echo "5 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Courier >> endobj\n";      // F2 = Regular
+        echo "4 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Courier-Bold >> endobj\n"; 
+        echo "5 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Courier >> endobj\n";      
         echo "6 0 obj << /Length " . $streamLength . " >> stream\n";
         echo $contentStream;
         echo "endstream\nendobj\n";
@@ -829,7 +830,6 @@ try {
         .user-row:hover { background-color: #eff6ff; border: 1px solid #000000; }
         .user-field-value { font-size: 0.9rem; font-weight: 600; color: #0f172a; }
 
-        /* Hover Tooltip */
         .hover-tooltip {
             position: fixed;
             display: none;
@@ -907,21 +907,8 @@ try {
             padding-bottom: 4px;
         }
 
-        .panel-upper-half {
-            display: flex;
-            flex-direction: column;
-            gap: 1rem;
-        }
-
-        .panel-lower-half {
-            display: flex;
-            flex-direction: column;
-            gap: 1rem;
-            background-color: #f8fafc;
-            padding: 1.25rem;
-            border-radius: 10px;
-            border: 1px solid #e2e8f0;
-        }
+        .panel-upper-half { display: flex; flex-direction: column; gap: 1rem; }
+        .panel-lower-half { display: flex; flex-direction: column; gap: 1rem; background-color: #f8fafc; padding: 1.25rem; border-radius: 10px; border: 1px solid #e2e8f0; }
 
         .form-row-1 { display: grid; grid-template-columns: 0.8fr 2.2fr 1.2fr 0.8fr auto; gap: 1rem; align-items: center; }
         .form-row-2 { display: grid; grid-template-columns: 1fr 1.3fr 1.3fr 1fr; gap: 1rem; align-items: flex-start; }
@@ -1002,7 +989,6 @@ try {
         .btn-modify.is-active { background-color: #2563eb; cursor: pointer; }
         .btn-modify.is-active:hover { background-color: #1d4ed8; }
 
-        /* Report Export Controls */
         .report-checkbox-group { display: flex; flex-direction: column; gap: 0.85rem; }
         .report-item-block { display: flex; flex-direction: column; gap: 4px; }
         .report-option-row { display: flex; align-items: center; gap: 12px; font-size: 0.9rem; font-weight: 600; color: #1e293b; cursor: pointer; }
@@ -1035,7 +1021,6 @@ try {
         }
         .btn-export-large:hover { background-color: #334155; transform: translateY(-1px); }
 
-        /* Modals */
         .modal-overlay {
             display: none;
             position: fixed;
@@ -1180,11 +1165,9 @@ try {
                 </button>
 
                 <div class="panel-content">
-                    <!-- UPPER HALF: MODIFY -->
                     <div class="panel-upper-half">
                         <div class="section-title">Modify</div>
                         
-                        <!-- Line 1: Basic Info -->
                         <div class="form-row-1">
                             <div class="field-group">
                                 <label class="field-label">uId</label>
@@ -1204,7 +1187,6 @@ try {
                             </div>
                         </div>
 
-                        <!-- Line 2: Email, Password, Live Hash, and Role Fields -->
                         <div class="form-row-2">
                             <div class="field-group">
                                 <label class="field-label">Email</label>
@@ -1227,7 +1209,6 @@ try {
                             </div>
                         </div>
 
-                        <!-- Line 3: Compact Organisations Checklist -->
                         <div class="field-group">
                             <label class="field-label" id="panelOrgLabel">Organisations Enrolled:</label>
                             <div class="dropdown-checklist-container">
@@ -1246,14 +1227,12 @@ try {
                             </div>
                         </div>
 
-                        <!-- Line 4: Modify & Delete Buttons Grouped Together -->
                         <div class="panel-actions-row">
                             <button type="button" class="btn-modify" id="btnModify" disabled>Modify</button>
                             <button type="button" class="btn-delete-user" id="btnDeleteUser">Delete User</button>
                         </div>
                     </div>
 
-                    <!-- LOWER HALF: EXPORT REPORTS -->
                     <div class="panel-lower-half" id="exportSectionContainer" style="display:none;">
                         <div class="section-title">Export Reports</div>
                         
@@ -1262,7 +1241,6 @@ try {
                             <input type="hidden" name="export_uid" id="formExportUid">
 
                             <div class="report-checkbox-group">
-                                <!-- Option 1: Attendance -->
                                 <div class="report-item-block">
                                     <div class="report-option-row">
                                         <input type="checkbox" id="chkAttendance" name="opt_attendance" value="1">
@@ -1283,7 +1261,6 @@ try {
                                     </div>
                                 </div>
 
-                                <!-- Option 2: Participation -->
                                 <div class="report-item-block">
                                     <div class="report-option-row">
                                         <input type="checkbox" id="chkParticipation" name="opt_participation" value="1">
@@ -1298,7 +1275,6 @@ try {
                                     </div>
                                 </div>
 
-                                <!-- Option 3: Satisfactory -->
                                 <div class="report-item-block">
                                     <div class="report-option-row">
                                         <input type="checkbox" id="chkSatisfactory" name="opt_satisfactory" value="1">
@@ -1313,7 +1289,6 @@ try {
                                     </div>
                                 </div>
 
-                                <!-- Select All Option -->
                                 <label class="report-option-row" style="margin-top: 6px; border-top: 1px dashed #cbd5e1; padding-top: 8px;">
                                     <input type="checkbox" id="chkSelectAll">
                                     <span style="font-weight: 800; color: #2563eb;">Select All Options</span>
@@ -1328,7 +1303,6 @@ try {
         </main>
     </div>
 
-    <!-- Centered Modal Confirmation Overlay -->
     <div class="modal-overlay" id="confirmModal">
         <div class="confirm-modal">
             <div class="modal-title" id="modalTitle">Confirm Action</div>
@@ -1340,7 +1314,6 @@ try {
         </div>
     </div>
 
-    <!-- Fixed Maximum Size Scrollable Add User Modal -->
     <div class="modal-overlay" id="addUserModal">
         <div class="add-modal">
             <div class="modal-title">Add New Users</div>
@@ -1359,9 +1332,7 @@ try {
                 </div>
             </div>
 
-            <div id="addRowsContainer" class="add-modal-body">
-                <!-- Dynamic input rows render here -->
-            </div>
+            <div id="addRowsContainer" class="add-modal-body"></div>
 
             <div class="modal-actions">
                 <button type="button" class="btn-modal-cancel" id="btnAddCancel">Cancel</button>
@@ -1453,7 +1424,6 @@ try {
         const exportForm = document.getElementById('exportForm');
         const formExportUid = document.getElementById('formExportUid');
 
-        // Sorting Logic
         let currentSortField = 'uid';
         let currentSortAsc = true;
 
@@ -1500,10 +1470,8 @@ try {
             });
         });
 
-        // Initial default sort by UID ascending
         sortTable('uid', true);
 
-        // Toggle drop-down visibility when individual checkboxes are clicked
         chkAttendance.addEventListener('change', () => {
             if (chkAttendance.checked) {
                 attOrgWrapper.classList.add('visible');
@@ -1549,7 +1517,6 @@ try {
             }
         });
 
-        // Helper to setup multi-select checklists for inline sub-dropdowns allowing both ALL and specific orgs
         function setupSubChecklist(anchor, dropdown, labelElem, userOrgs, prefix) {
             dropdown.innerHTML = `
                 <label class="checklist-item">
@@ -1897,7 +1864,6 @@ try {
                 return;
             }
 
-            // Dynamically inject selected sub-checkbox values as hidden fields before submitting
             const form = exportForm;
             form.querySelectorAll('.dyn-hidden-org').forEach(el => el.remove());
 
