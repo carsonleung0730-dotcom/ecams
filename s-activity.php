@@ -1,10 +1,8 @@
 <?php
 require_once 'db.php';
-
 session_start();
 
 if (!isset($_SESSION['role']) \vert{}\vert{} strtolower($_SESSION['role']) !== 'student') {
-    // Redirect unauthorized users to an error page or their respective dashboard
     header('Location: unauthorized.php');
     exit();
 }
@@ -13,66 +11,44 @@ if (!isset($_SESSION['uid']) && !isset($_SESSION['user_id'])) {
     exit();
 }
 
-// Retrieve logged-in user identifier from session[cite: 9]
-$loggedInIdentifier = '';
-if (!empty($_SESSION['uid'])) {
-    $loggedInIdentifier =$_SESSION['uid'];
-} elseif (!empty($_SESSION['user_id'])) {
-    $loggedInIdentifier =$_SESSION['user_id'];
-} elseif (!empty($_SESSION['id'])) {
-    $loggedInIdentifier =$_SESSION['id'];
-} elseif (!empty($_SESSION['username'])) {
-    $loggedInIdentifier =$_SESSION['username'];
-} elseif (!empty($_SESSION['user'])) {
-    $loggedInIdentifier =$_SESSION['user'];
-} elseif (!empty($_SESSION['name'])) {
-    $loggedInIdentifier =$_SESSION['name'];
-} else {
-    $loggedInIdentifier = 18; // Default fallback sample UID[cite: 9]
-}
+$studentUid =$_SESSION['uid'] ?? $_SESSION['user_id'] ?? $_SESSION['id'] ?? 2;
 
-// Fetch complete user details including ismonitor using MySQLi[cite: 9]
-$userInfo = [];
+// Fetch organizations where the logged-in student is a member
+$managedOrgIds = [];$managedOrgsList = [];
 if (isset($conn) &&$conn instanceof mysqli) {
-    if (is_numeric($loggedInIdentifier)) {
-        $stmt =$conn->prepare("SELECT uid, name, email, role, class, cid, ismonitor FROM users WHERE uid = ?");
-        $stmt->bind_param("s", $loggedInIdentifier);
-    } else {
-        $stmt =$conn->prepare("SELECT uid, name, email, role, class, cid, ismonitor FROM users WHERE name = ? OR email = ?");
-        $stmt->bind_param("ss", $loggedInIdentifier,$loggedInIdentifier);
+    $mOrgStmt =$conn->prepare("
+        SELECT o.oid, o.oname 
+        FROM membership m 
+        JOIN organisations o ON m.oid = o.oid 
+        WHERE m.sid = ? 
+        ORDER BY o.oname ASC
+    ");
+    $mOrgStmt->bind_param("s", $studentUid);$mOrgStmt->execute();
+    $mOrgRes =$mOrgStmt->get_result();
+    while ($row =$mOrgRes->fetch_assoc()) {
+        $managedOrgsList[] =$row;
+        $managedOrgIds[] =$row['oid'];
     }
-    $stmt->execute();
-    $result =$stmt->get_result();
-    if ($row =$result->fetch_assoc()) {
-        $userInfo =$row;
-    }
-    $stmt->close();
+    $mOrgStmt->close();
 }
 
-$isMonitor = (!empty($userInfo['ismonitor']) &&$userInfo['ismonitor'] == 1);
-
-$organizations = [];$orgMap = [];
-if (isset($conn) &&$conn instanceof mysqli) {
-    $orgResult =$conn->query("SELECT oid, oname FROM organisations ORDER BY oid ASC");
-    if ($orgResult) {
-        while ($org =$orgResult->fetch_assoc()) {
-            $organizations[] =$org;
-            $orgMap[$org['oid']] =$org['oname'];
-        }
-    }
-}
-
+// Fetch activities ONLY for the organizations this student belongs to
 $dbActivities = [];
-if (isset($conn) &&$conn instanceof mysqli) {
-    $actResult =$conn->query("SELECT aid, oid, aname, date, room, timeslot FROM activity");
-    if ($actResult) {
-        while ($act =$actResult->fetch_assoc()) {
-            $dbActivities[] =$act;
-        }
-    }
+if (isset($conn) && $conn instanceof mysqli && !empty($managedOrgIds)) {
+    $placeholders = implode(',', array_fill(0, count($managedOrgIds), '?'));
+    $types = str_repeat('s', count($managedOrgIds));
+    
+    $stmt =$conn->prepare("
+        SELECT a.aid, a.oid, a.aname, a.date, a.room, a.timeslot, o.oname 
+        FROM activity a 
+        LEFT JOIN organisations o ON a.oid = o.oid 
+        WHERE a.oid IN ($placeholders)
+    ");
+    $stmt->bind_param($types, ...$managedOrgIds);
+    $stmt->execute();$res = $stmt->get_result();$dbActivities = $res->fetch_all(MYSQLI_ASSOC);$stmt->close();
 }
 
-$events = array_map(function($act) use ($orgMap) {$orgName = $orgMap[$act['oid']] ?? 'Unknown Organisation';
+$events = array_map(function($act) {
     return [
         'id' => $act['aid'],
         'title' => $act['aname'],
@@ -80,11 +56,12 @@ $events = array_map(function($act) use ($orgMap) {$orgName = $orgMap[$act['oid']
         'extendedProps' => [
             'aid' => $act['aid'],
             'oid' => $act['oid'],
-            'orgName' => $orgName,
+            'oname' => $act['oname'] ?? 'Unknown Organisation',
             'aname' => $act['aname'],
             'date' => $act['date'],
             'room' => $act['room'],
-            'timeslot' => $act['timeslot'] ?? 'Lunch Recess'
+            'timeslot' => $act['timeslot'] ?? 'Lunch Recess',
+            'isManaged' => true
         ]
     ];
 }, $dbActivities);
@@ -101,13 +78,17 @@ $events = array_map(function($act) use ($orgMap) {$orgName = $orgMap[$act['oid']
 
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
-        html, body { height: 100%; overflow: hidden; }
+        
+        html, body {
+            height: 100%;
+            overflow: hidden;
+        }
 
         body {
             font-family: system-ui, -apple-system, sans-serif;
             background-color: #e0f2fe;
             color: #1e293b;
-            min-height: 100vh;
+            height: 100vh;
             display: flex;
             flex-direction: column;
             overflow-x: hidden;
@@ -122,6 +103,7 @@ $events = array_map(function($act) use ($orgMap) {$orgName = $orgMap[$act['oid']
             z-index: 20;
             height: 110px;
             box-sizing: border-box;
+            flex-shrink: 0;
         }
 
         .header-content { max-width: 100%; margin: 0 auto; display: flex; align-items: center; justify-content: space-between; }
@@ -147,24 +129,11 @@ $events = array_map(function($act) use ($orgMap) {$orgName = $orgMap[$act['oid']
 
         .fc-daygrid-day-number { transition: color 1.25s ease !important; }
 
-        /* Past/Greyed out days styling */
-        .fc-daygrid-day.fc-day-past {
-            background-color: #cbd5e1 !important;
-        }
-        .fc-daygrid-day.fc-day-past .fc-daygrid-day-number {
-            color: #64748b !important;
-        }
-        .fc-daygrid-day.fc-day-past:hover {
-            outline: none !important;
-            background-color: #cbd5e1 !important;
-        }
-        .fc-daygrid-day.fc-day-past.has-event {
-            cursor: pointer !important;
-        }
-        .fc-daygrid-day.fc-day-past.has-event:hover {
-            outline: 4px double #8fa7ea !important;
-            outline-offset: -4px;
-        }
+        .fc-daygrid-day.fc-day-past { background-color: #cbd5e1 !important; }
+        .fc-daygrid-day.fc-day-past .fc-daygrid-day-number { color: #64748b !important; }
+        .fc-daygrid-day.fc-day-past:hover { outline: none !important; background-color: #cbd5e1 !important; }
+        .fc-daygrid-day.fc-day-past.has-event { cursor: pointer !important; }
+        .fc-daygrid-day.fc-day-past.has-event:hover { outline: 4px double #8fa7ea !important; outline-offset: -4px; }
 
         .fc-daygrid-day:hover {
             outline: 4px double #8fa7ea !important;
@@ -173,12 +142,8 @@ $events = array_map(function($act) use ($orgMap) {$orgName = $orgMap[$act['oid']
             background-color: transparent;
         }
 
-        .fc-daygrid-day.has-event:hover {
-            outline: 4px double #e99090 !important;
-            outline-offset: -4px;
-        }
+        .fc-daygrid-day.has-event:hover { outline: 4px double #e99090 !important; outline-offset: -4px; }
 
-        /* Heatmap Color Spread Modes */
         .calendar-active-mode-red .fc-daygrid-day:not(.fc-day-past) { background-color: #fff1f2 !important; }
         .calendar-active-mode-blue .fc-daygrid-day:not(.fc-day-past) { background-color: #f0fdf4 !important; }
 
@@ -216,9 +181,9 @@ $events = array_map(function($act) use ($orgMap) {$orgName = $orgMap[$act['oid']
             font-weight: 700 !important;
         }
 
-        .app-body { flex: 1; display: flex; min-height: calc(100vh - 110px); position: relative; overflow-x: hidden; }
+        .app-body { flex: 1; display: flex; height: calc(100vh - 110px); position: relative; overflow: hidden; }
 
-        .side-panel { width: 280px; background-color: #ffffff; border-right: 4px double #1037e572; display: flex; flex-direction: column; flex-shrink: 0; }
+        .side-panel { width: 280px; background-color: #ffffff; border-right: 4px double #1037e572; display: flex; flex-direction: column; flex-shrink: 0; height: 100%; }
         .nav-btn {
             flex: 1; display: flex; align-items: center; justify-content: center; text-decoration: none;
             font-size: 1.35rem; font-weight: 700; color: #ffffff; transition: all 0.2s ease-in-out;
@@ -233,9 +198,28 @@ $events = array_map(function($act) use ($orgMap) {$orgName = $orgMap[$act['oid']
         .nav-btn-org { background-color: #fea768; border-bottom: 2px solid #ea580c; }
         .nav-btn-activity { background-color: #dc2626; }
 
-        main { flex: 1; padding: 2.5rem 1.5rem 2.5rem 1rem; background-color: #d6e6f9; height: 100%; overflow-y: auto; }
+        main { flex: 1; padding: 1.5rem; background-color: #d6e6f9; height: 100%; overflow: hidden; display: flex; flex-direction: column; }
 
-        .calendar-container { max-width: 1000px; margin: 0; padding: 24px; background: #ffffff; border-radius: 12px; box-shadow: 0 4px 12px rgba(37, 99, 235, 0.08); border: 1px solid #dbeafe; }
+        .calendar-container {
+            max-width: 1000px;
+            width: 100%;
+            height: 100%;
+            margin: 0;
+            padding: 16px;
+            background: #ffffff;
+            border-radius: 12px;
+            box-shadow: 0 4px 12px rgba(37, 99, 235, 0.08);
+            border: 1px solid #dbeafe;
+            display: flex;
+            flex-direction: column;
+            box-sizing: border-box;
+            overflow: hidden;
+        }
+
+        #ecams-calendar {
+            flex: 1;
+            min-height: 0;
+        }
 
         :root {
             --fc-border-color: #e2e8f0; --fc-button-bg-color: #2563eb; --fc-button-border-color: #2563eb;
@@ -243,11 +227,12 @@ $events = array_map(function($act) use ($orgMap) {$orgName = $orgMap[$act['oid']
             --fc-page-bg-color: #ffffff; --fc-neutral-bg-color: #f8fafc;
         }
 
-        .fc .fc-toolbar-title { font-size: 1.4rem; font-weight: 700; color: #0f172a; }
+        .fc .fc-toolbar-title { font-size: 1.25rem; font-weight: 700; color: #0f172a; }
+        .fc .fc-toolbar { margin-bottom: 0.5rem !important; }
 
         .activity-details-panel {
             position: fixed; top: 130px; right: 20px; width: clamp(220px, 25vw, 380px); min-width: 220px;
-            max-width: calc(100vw - 30px); height: auto; min-height: 280px; max-height: calc(100vh - 160px);
+            max-width: calc(100vw - 30px); height: auto; min-height: 320px; max-height: calc(100vh - 160px);
             background-color: #ffffff; border: 1px solid #cbd5e1; box-shadow: 0 10px 25px rgba(0, 0, 0, 0.15);
             border-radius: 8px; z-index: 1000; display: none; flex-direction: column; resize: both; overflow: hidden; box-sizing: border-box;
         }
@@ -260,7 +245,8 @@ $events = array_map(function($act) use ($orgMap) {$orgName = $orgMap[$act['oid']
         }
 
         .panel-header { padding: 0.75rem 1rem; background-color: #f8fafc; border-bottom: 2px solid #e2e8f0; display: flex; justify-content: space-between; align-items: center; cursor: move; user-select: none; }
-        .panel-title-text { font-size: 0.95rem; font-weight: 700; color: #1e293b; }
+        .header-tabs { display: flex; align-items: center; gap: 8px; font-size: 0.95rem; font-weight: 700; }
+        .tab-btn { background: none; border: none; font-size: 0.9rem; font-weight: 700; color: #2563eb; cursor: pointer; padding: 4px 8px; border-radius: 4px; }
         .close-btn { background: none; border: none; font-size: 1.5rem; color: #64748b; cursor: pointer; line-height: 1; }
         .close-btn:hover { color: #0f172a; }
 
@@ -287,9 +273,12 @@ $events = array_map(function($act) use ($orgMap) {$orgName = $orgMap[$act['oid']
         .activity-card-title { font-size: 0.95rem; font-weight: 700; color: #1e293b; }
         .activity-card-sub { font-size: 0.75rem; color: #64748b; margin-top: 4px; }
 
-        .detail-item-group { margin-bottom: 0.85rem; display: flex; flex-direction: column; gap: 0.2rem; }
-        .detail-item-label { font-size: 0.75rem; font-weight: 700; color: #64748b; text-transform: uppercase; letter-spacing: 0.04em; }
-        .detail-item-value { font-size: 0.95rem; font-weight: 700; color: #1e293b; background-color: #f8fafc; border: 1px solid #e2e8f0; padding: 0.5rem 0.75rem; border-radius: 6px; }
+        .field-group { margin-bottom: 0.85rem; display: flex; flex-direction: column; gap: 0.35rem; }
+        .field-group label { font-size: 0.8rem; font-weight: 700; color: #475569; text-transform: uppercase; letter-spacing: 0.04em; }
+        .field-group input, .field-group select {
+            width: 100%; padding: 0.6rem 0.75rem; border: 1px solid #cbd5e1; border-radius: 6px;
+            font-size: 0.95rem; color: #0f172a; outline: none; background-color: #f1f5f9; color: #64748b; cursor: not-allowed;
+        }
     </style>
 </head>
 <body>
@@ -301,7 +290,7 @@ $events = array_map(function($act) use ($orgMap) {$orgName = $orgMap[$act['oid']
                 <div class="header-titles">
                     <h1>Extracurricular Activity Management System</h1>
                     <div class="sub-header-row">
-                        <p>Efficient, Exquisite, Expertly-crafted ECA managing platform</p>
+                        <p>Student Activity View Dashboard</p>
                         <a href="logout.php" class="btn-logout">Logout</a>
                     </div>
                 </div>
@@ -315,10 +304,10 @@ $events = array_map(function($act) use ($orgMap) {$orgName = $orgMap[$act['oid']
 
     <div class="app-body">
         <aside class="side-panel">
-            <a href="s-org.php" class="nav-btn nav-btn-org is-active" id="navBtnOrg">
+            <a href="s-org.php" class="nav-btn nav-btn-org">
                 <img src="org.png" alt="Organization" class="btn-icon">
             </a>
-            <a href="student.php" class="nav-btn nav-btn-activity" id="navBtnActivity">
+            <a href="s-activity.php" class="nav-btn nav-btn-activity is-active" id="navBtnActivity">
                 <img src="act.png" alt="Activity" class="btn-icon">
             </a>
         </aside>
@@ -333,7 +322,9 @@ $events = array_map(function($act) use ($orgMap) {$orgName = $orgMap[$act['oid']
             <div class="resize-handle-bl" id="resizeHandleBL"></div>
 
             <div class="panel-header" id="panelHeader">
-                <div class="panel-title-text" id="panelTitle">Activities</div>
+                <div class="header-tabs">
+                    <button type="button" class="tab-btn active" id="tabExisting">Organisation Activities (Read-Only)</button>
+                </div>
                 <button class="close-btn" id="closePanelBtn">&times;</button>
             </div>
             
@@ -342,38 +333,40 @@ $events = array_map(function($act) use ($orgMap) {$orgName = $orgMap[$act['oid']
                     <div class="activity-cards-list" id="activityCardsContainer"></div>
                 </div>
 
-                <div id="activityDetailsView" style="display: none;">
+                <div id="activityFormView" style="display: none;">
                     <button type="button" class="btn-return-back" id="returnBackBtn" style="display: none;">&larr; Back</button>
 
-                    <div class="detail-item-group">
-                        <div class="detail-item-label">Activity ID</div>
-                        <div class="detail-item-value" id="view_aid">-</div>
-                    </div>
+                    <form id="activityForm" onsubmit="return false;">
+                        <div class="field-group">
+                            <label for="field_aid">Activity ID (aid)</label>
+                            <input type="text" id="field_aid" name="aid" readonly disabled>
+                        </div>
 
-                    <div class="detail-item-group">
-                        <div class="detail-item-label">Organisation</div>
-                        <div class="detail-item-value" id="view_org">-</div>
-                    </div>
+                        <div class="field-group">
+                            <label for="field_oid">Organisation</label>
+                            <input type="text" id="field_oid" name="oid" readonly disabled>
+                        </div>
 
-                    <div class="detail-item-group">
-                        <div class="detail-item-label">Activity Name</div>
-                        <div class="detail-item-value" id="view_aname">-</div>
-                    </div>
+                        <div class="field-group">
+                            <label for="field_aname">Activity Name (aname)</label>
+                            <input type="text" id="field_aname" name="aname" readonly disabled>
+                        </div>
 
-                    <div class="detail-item-group">
-                        <div class="detail-item-label">Date</div>
-                        <div class="detail-item-value" id="view_date">-</div>
-                    </div>
+                        <div class="field-group">
+                            <label for="field_date">Date (date)</label>
+                            <input type="date" id="field_date" name="date" disabled>
+                        </div>
 
-                    <div class="detail-item-group">
-                        <div class="detail-item-label">Room</div>
-                        <div class="detail-item-value" id="view_room">-</div>
-                    </div>
+                        <div class="field-group">
+                            <label for="field_room">Room (room)</label>
+                            <input type="number" id="field_room" name="room" readonly disabled>
+                        </div>
 
-                    <div class="detail-item-group">
-                        <div class="detail-item-label">Time Slot</div>
-                        <div class="detail-item-value" id="view_timeslot">-</div>
-                    </div>
+                        <div class="field-group">
+                            <label for="field_timeslot">Time Slot</label>
+                            <input type="text" id="field_timeslot" name="timeslot" readonly disabled>
+                        </div>
+                    </form>
                 </div>
             </div>
         </div>
@@ -398,14 +391,17 @@ $events = array_map(function($act) use ($orgMap) {$orgName = $orgMap[$act['oid']
             var currentDayActivities = [];
 
             var panel = document.getElementById('activityPanel');
-            var panelHeader = document.getElementById('panelHeader');
-            var resizeHandleBL = document.getElementById('resizeHandleBL');
-            var panelTitle = document.getElementById('panelTitle');
-
             var activitiesListView = document.getElementById('activitiesListView');
             var activityCardsContainer = document.getElementById('activityCardsContainer');
-            var activityDetailsView = document.getElementById('activityDetailsView');
+            var activityFormView = document.getElementById('activityFormView');
             var returnBackBtn = document.getElementById('returnBackBtn');
+            var navBtnActivity = document.getElementById('navBtnActivity');
+
+            navBtnActivity.addEventListener('click', function(e) {
+                e.preventDefault();
+                closeRightPanel();
+                window.location.href = 's-activity.php';
+            });
 
             function resetPanelPosition() {
                 panel.style.top = '';
@@ -443,108 +439,14 @@ $events = array_map(function($act) use ($orgMap) {$orgName = $orgMap[$act['oid']
                 });
             }
 
-            var isDragging = false, startX, startY, initialLeft, initialTop;
-            panelHeader.addEventListener('mousedown', function(e) {
-                if (e.target.classList.contains('close-btn') || e.target.tagName === 'BUTTON') return;
-                isDragging = true;
-                startX = e.clientX;
-                startY = e.clientY;
-
-                var rect = panel.getBoundingClientRect();
-                initialLeft = rect.left;
-                initialTop = rect.top;
-
-                panel.style.right = 'auto';
-                panel.style.left = initialLeft + 'px';
-                panel.style.top = initialTop + 'px';
-
-                document.addEventListener('mousemove', onMouseMoveDrag);
-                document.addEventListener('mouseup', onMouseUpDrag);
-            });
-
-            function onMouseMoveDrag(e) {
-                if (!isDragging) return;
-                var dx = e.clientX - startX;
-                var dy = e.clientY - startY;
-
-                var newLeft = initialLeft + dx;
-                var newTop = initialTop + dy;
-
-                var viewportWidth = window.innerWidth;
-                var viewportHeight = window.innerHeight;
-                var panelWidth = panel.offsetWidth;
-                var panelHeight = panel.offsetHeight;
-
-                var maxLeft = Math.max(0, viewportWidth - panelWidth - 10);
-                var maxTop = Math.max(0, viewportHeight - panelHeight - 10);
-
-                panel.style.left = Math.max(10, Math.min(newLeft, maxLeft)) + 'px';
-                panel.style.top = Math.max(10, Math.min(newTop, maxTop)) + 'px';
-            }
-
-            function onMouseUpDrag() {
-                isDragging = false;
-                document.removeEventListener('mousemove', onMouseMoveDrag);
-                document.removeEventListener('mouseup', onMouseUpDrag);
-            }
-
-            var isResizingBL = false, resStartX, resStartY, resStartWidth, resStartHeight, resStartLeft;
-            resizeHandleBL.addEventListener('mousedown', function(e) {
-                e.stopPropagation();
-                e.preventDefault();
-                isResizingBL = true;
-                resStartX = e.clientX;
-                resStartY = e.clientY;
-
-                var rect = panel.getBoundingClientRect();
-                resStartWidth = rect.width;
-                resStartHeight = rect.height;
-                resStartLeft = rect.left;
-
-                panel.style.right = 'auto';
-                panel.style.left = resStartLeft + 'px';
-
-                document.addEventListener('mousemove', onMouseMoveResizeBL);
-                document.addEventListener('mouseup', onMouseUpResizeBL);
-            });
-
-            function onMouseMoveResizeBL(e) {
-                if (!isResizingBL) return;
-                var dx = e.clientX - resStartX;
-                var dy = e.clientY - resStartY;
-
-                var minW = 220;
-                var maxW = window.innerWidth - 30;
-
-                var newWidth = resStartWidth - dx;
-                if (newWidth >= minW && newWidth <= maxW) {
-                    var newLeft = resStartLeft + dx;
-                    if (newLeft >= 10) {
-                        panel.style.width = newWidth + 'px';
-                        panel.style.left = newLeft + 'px';
-                    }
-                }
-
-                var minH = 280;
-                var maxH = window.innerHeight - 150;
-                var newHeight = resStartHeight + dy;
-                if (newHeight >= minH && newHeight <= maxH) {
-                    panel.style.height = newHeight + 'px';
-                }
-            }
-
-            function onMouseUpResizeBL() {
-                isResizingBL = false;
-                document.removeEventListener('mousemove', onMouseMoveResizeBL);
-                document.removeEventListener('mouseup', onMouseUpResizeBL);
-            }
-
             var calendar = new FullCalendar.Calendar(calendarEl, {
                 initialView: 'dayGridMonth',
                 displayEventTime: false,
                 headerToolbar: { left: 'prev,next today', center: 'title', right: 'dayGridMonth,listYear' },
                 buttonText: { today: 'Today', dayGridMonth: 'Month', listYear: 'List All' },
                 events: dbEvents,
+                handleWindowResize: true,
+                stickyHeaderDates: true,
 
                 datesSet: function() {
                     markCellsWithEvents();
@@ -561,7 +463,7 @@ $events = array_map(function($act) use ($orgMap) {$orgName = $orgMap[$act['oid']
                         return e.startStr.split('T')[0] === clickedDateStr;
                     });
 
-                    if (isPast && currentDayActivities.length === 0) {
+                    if (currentDayActivities.length === 0) {
                         return;
                     }
 
@@ -575,15 +477,9 @@ $events = array_map(function($act) use ($orgMap) {$orgName = $orgMap[$act['oid']
 
                     currentSelectedDate = clickedDateStr;
 
-                    if (currentDayActivities.length > 0) {
-                        calendarEl.classList.add('calendar-active-mode-red');
-                        openPanelWithActivityList(currentDayActivities);
-                        if (!isPast) {
-                            applyHeatmapSpread(clickedDateStr);
-                        }
-                    } else {
-                        calendarEl.classList.add('calendar-active-mode-blue');
-                        openEmptyDateNotice(clickedDateStr);
+                    calendarEl.classList.add('calendar-active-mode-red');
+                    openPanelWithActivityList(currentDayActivities);
+                    if (!isPast) {
                         applyHeatmapSpread(clickedDateStr);
                     }
                 },
@@ -663,7 +559,6 @@ $events = array_map(function($act) use ($orgMap) {$orgName = $orgMap[$act['oid']
 
             function openPanelWithActivityList(activitiesList) {
                 resetPanelPosition();
-                panelTitle.textContent = 'Activities on ' + currentSelectedDate;
 
                 activityCardsContainer.innerHTML = '';
                 
@@ -677,7 +572,8 @@ $events = array_map(function($act) use ($orgMap) {$orgName = $orgMap[$act['oid']
 
                     var subEl = document.createElement('div');
                     subEl.className = 'activity-card-sub';
-                    subEl.textContent = 'Activity ID: ' + evt.id + ' | ' + (evt.extendedProps.timeslot || 'Lunch Recess');
+                    var orgName = evt.extendedProps.oname || 'Unknown Organisation';
+                    subEl.textContent = 'Org: ' + orgName + ' | ' + (evt.extendedProps.timeslot || 'Lunch Recess');
 
                     card.appendChild(titleEl);
                     card.appendChild(subEl);
@@ -690,38 +586,32 @@ $events = array_map(function($act) use ($orgMap) {$orgName = $orgMap[$act['oid']
                 });
 
                 activitiesListView.style.display = 'block';
-                activityDetailsView.style.display = 'none';
-                panel.classList.add('active');
-            }
-
-            function openEmptyDateNotice(selectedDate) {
-                resetPanelPosition();
-                panelTitle.textContent = 'No Activities';
-                activityCardsContainer.innerHTML = '<div style="padding: 1rem; color: #64748b; font-size: 0.9rem; text-align: center;">No extracurricular activities scheduled on ' + selectedDate + '.</div>';
-                activitiesListView.style.display = 'block';
-                activityDetailsView.style.display = 'none';
+                activityFormView.style.display = 'none';
                 panel.classList.add('active');
             }
 
             function showActivityDetails(eventObj) {
                 activitiesListView.style.display = 'none';
-                activityDetailsView.style.display = 'block';
+                activityFormView.style.display = 'block';
                 returnBackBtn.style.display = 'inline-flex';
-                panelTitle.textContent = 'Activity Details';
 
+                loadActivityIntoForm(eventObj);
+            }
+
+            function loadActivityIntoForm(eventObj) {
                 var props = eventObj.extendedProps;
-                document.getElementById('view_aid').textContent = props.aid || eventObj.id;
-                document.getElementById('view_org').textContent = (props.oid || '') + ' - ' + (props.orgName || 'Unknown');
-                document.getElementById('view_aname').textContent = props.aname || eventObj.title;
-                document.getElementById('view_date').textContent = props.date || eventObj.startStr.split('T')[0];
-                document.getElementById('view_room').textContent = props.room || 'N/A';
-                document.getElementById('view_timeslot').textContent = props.timeslot || 'Lunch Recess';
+
+                document.getElementById('field_aid').value = props.aid || eventObj.id;
+                document.getElementById('field_oid').value = (props.oid || '') + ' - ' + (props.oname || '');
+                document.getElementById('field_aname').value = props.aname || eventObj.title;
+                document.getElementById('field_date').value = props.date || eventObj.startStr.split('T')[0];
+                document.getElementById('field_room').value = props.room || '';
+                document.getElementById('field_timeslot').value = props.timeslot || 'Lunch Recess';
             }
 
             returnBackBtn.addEventListener('click', function() {
-                activityDetailsView.style.display = 'none';
+                activityFormView.style.display = 'none';
                 activitiesListView.style.display = 'block';
-                panelTitle.textContent = 'Activities on ' + currentSelectedDate;
             });
 
             function closeRightPanel() {
