@@ -128,7 +128,6 @@ $events = array_map(function($act) {
             position: relative;
         }
 
-        /* Past dates greyed out[cite: 1] */
         .fc-daygrid-day.fc-day-past { background-color: #cbd5e1 !important; }
         .fc-daygrid-day.fc-day-past .fc-daygrid-day-number { color: #64748b !important; }
         .fc-daygrid-day.fc-day-past:hover { background-color: #cbd5e1 !important; }
@@ -333,7 +332,8 @@ $events = array_map(function($act) {
 
         document.addEventListener('DOMContentLoaded', function() {
             var calendarEl = document.getElementById('ecams-calendar');
-            var dbEvents = <?php echo json_encode($events); ?>;
+            // Safe JSON encoding flags prevent quote/syntax crashes
+            var dbEvents = <?php echo json_encode($events, JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP); ?>;
 
             var currentDayActivities = [];
 
@@ -344,18 +344,22 @@ $events = array_map(function($act) {
             var returnBackBtn = document.getElementById('returnBackBtn');
             var navBtnActivity = document.getElementById('navBtnActivity');
 
-            navBtnActivity.addEventListener('click', function(e) {
-                e.preventDefault();
-                closeRightPanel();
-                window.location.href = 's-activity.php';
-            });
+            if (navBtnActivity) {
+                navBtnActivity.addEventListener('click', function(e) {
+                    e.preventDefault();
+                    closeRightPanel();
+                    window.location.href = 's-activity.php';
+                });
+            }
 
             function resetPanelPosition() {
-                panel.style.top = '';
-                panel.style.left = '';
-                panel.style.right = '';
-                panel.style.width = '';
-                panel.style.height = '';
+                if (panel) {
+                    panel.style.top = '';
+                    panel.style.left = '';
+                    panel.style.right = '';
+                    panel.style.width = '';
+                    panel.style.height = '';
+                }
             }
 
             function getTodayDateStr() {
@@ -443,40 +447,42 @@ $events = array_map(function($act) {
 
             function openPanelWithActivityList(activitiesList) {
                 resetPanelPosition();
-                activityCardsContainer.innerHTML = '';
-                
-                activitiesList.forEach(function(evt) {
-                    var card = document.createElement('div');
-                    card.className = 'activity-card';
+                if (activityCardsContainer) {
+                    activityCardsContainer.innerHTML = '';
                     
-                    var titleEl = document.createElement('div');
-                    titleEl.className = 'activity-card-title';
-                    titleEl.textContent = evt.title;
+                    activitiesList.forEach(function(evt) {
+                        var card = document.createElement('div');
+                        card.className = 'activity-card';
+                        
+                        var titleEl = document.createElement('div');
+                        titleEl.className = 'activity-card-title';
+                        titleEl.textContent = evt.title;
 
-                    var subEl = document.createElement('div');
-                    subEl.className = 'activity-card-sub';
-                    var orgName = evt.extendedProps.oname || 'Unknown Organisation';
-                    subEl.textContent = 'Org: ' + orgName + ' | ' + (evt.extendedProps.timeslot || 'Lunch Recess');
+                        var subEl = document.createElement('div');
+                        subEl.className = 'activity-card-sub';
+                        var orgName = evt.extendedProps.oname || 'Unknown Organisation';
+                        subEl.textContent = 'Org: ' + orgName + ' | ' + (evt.extendedProps.timeslot || 'Lunch Recess');
 
-                    card.appendChild(titleEl);
-                    card.appendChild(subEl);
+                        card.appendChild(titleEl);
+                        card.appendChild(subEl);
 
-                    card.addEventListener('click', function() {
-                        showActivityDetails(evt);
+                        card.addEventListener('click', function() {
+                            showActivityDetails(evt);
+                        });
+
+                        activityCardsContainer.appendChild(card);
                     });
+                }
 
-                    activityCardsContainer.appendChild(card);
-                });
-
-                activitiesListView.style.display = 'block';
-                activityFormView.style.display = 'none';
-                panel.classList.add('active');
+                if (activitiesListView) activitiesListView.style.display = 'block';
+                if (activityFormView) activityFormView.style.display = 'none';
+                if (panel) panel.classList.add('active');
             }
 
             function showActivityDetails(eventObj) {
-                activitiesListView.style.display = 'none';
-                activityFormView.style.display = 'block';
-                returnBackBtn.style.display = 'inline-flex';
+                if (activitiesListView) activitiesListView.style.display = 'none';
+                if (activityFormView) activityFormView.style.display = 'block';
+                if (returnBackBtn) returnBackBtn.style.display = 'inline-flex';
 
                 loadActivityIntoForm(eventObj);
             }
@@ -484,25 +490,37 @@ $events = array_map(function($act) {
             function loadActivityIntoForm(eventObj) {
                 var props = eventObj.extendedProps;
 
-                document.getElementById('field_aid').value = props.aid || eventObj.id;
-                document.getElementById('field_oid').value = (props.oid || '') + ' - ' + (props.oname || '');
-                document.getElementById('field_aname').value = props.aname || eventObj.title;
-                document.getElementById('field_date').value = props.date || eventObj.startStr.split('T')[0];
-                document.getElementById('field_room').value = props.room || '';
-                document.getElementById('field_timeslot').value = props.timeslot || 'Lunch Recess';
+                var aidField = document.getElementById('field_aid');
+                var oidField = document.getElementById('field_oid');
+                var anameField = document.getElementById('field_aname');
+                var dateField = document.getElementById('field_date');
+                var roomField = document.getElementById('field_room');
+                var timeslotField = document.getElementById('field_timeslot');
+
+                if (aidField) aidField.value = props.aid || eventObj.id;
+                if (oidField) oidField.value = (props.oid || '') + ' - ' + (props.oname || '');
+                if (anameField) anameField.value = props.aname || eventObj.title;
+                if (dateField) dateField.value = props.date || eventObj.startStr.split('T')[0];
+                if (roomField) roomField.value = props.room || '';
+                if (timeslotField) timeslotField.value = props.timeslot || 'Lunch Recess';
             }
 
-            returnBackBtn.addEventListener('click', function() {
-                activityFormView.style.display = 'none';
-                activitiesListView.style.display = 'block';
-            });
+            if (returnBackBtn) {
+                returnBackBtn.addEventListener('click', function() {
+                    if (activityFormView) activityFormView.style.display = 'none';
+                    if (activitiesListView) activitiesListView.style.display = 'block';
+                });
+            }
 
             function closeRightPanel() {
-                panel.classList.remove('active');
+                if (panel) panel.classList.remove('active');
                 resetPanelPosition();
             }
 
-            document.getElementById('closePanelBtn').addEventListener('click', closeRightPanel);
+            var closeBtn = document.getElementById('closePanelBtn');
+            if (closeBtn) {
+                closeBtn.addEventListener('click', closeRightPanel);
+            }
         });
     </script>
 </body>
