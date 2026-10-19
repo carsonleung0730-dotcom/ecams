@@ -14,6 +14,9 @@ if (!isset($_SESSION['uid']) && !isset($_SESSION['user_id'])) {
 }
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
+    while (ob_get_level()) {
+        ob_end_clean();
+    }
     header('Content-Type: application/json');
     $action = $_POST['action'];
 
