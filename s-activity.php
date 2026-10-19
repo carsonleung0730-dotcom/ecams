@@ -332,7 +332,6 @@ $events = array_map(function($act) {
 
         document.addEventListener('DOMContentLoaded', function() {
             var calendarEl = document.getElementById('ecams-calendar');
-            // Safe JSON encoding flags prevent quote/syntax crashes
             var dbEvents = <?php echo json_encode($events, JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP); ?>;
 
             var currentDayActivities = [];
