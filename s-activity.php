@@ -1,8 +1,4 @@
 <?php
-// Enable error reporting for debugging
-ini_set('display_errors', 1);
-error_reporting(E_ALL);
-
 // Database configuration and session parameters
 require_once 'db.php';   
 session_start();
@@ -56,6 +52,25 @@ if (isset($conn) && $conn instanceof mysqli && !empty($managedOrgIds)) {
         }
     }
 }
+
+// 3. Carefully map activities into FullCalendar events format
+$events = array_map(function($act) {
+    return [
+        'id' => $act['aid'] ?? '',
+        'title' => $act['aname'] ?? 'Untitled Activity',
+        'start' => $act['date'] ?? date('Y-m-d'),
+        'extendedProps' => [
+            'aid' => $act['aid'] ?? '',
+            'oid' => $act['oid'] ?? '',
+            'oname' => $act['oname'] ?? 'Unknown Organisation',
+            'aname' => $act['aname'] ?? '',
+            'date' => $act['date'] ?? '',
+            'room' => $act['room'] ?? '',
+            'timeslot' => $act['timeslot'] ?? 'Lunch Recess',
+            'isManaged' => true
+        ]
+    ];
+}, $dbActivities);
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -131,21 +146,12 @@ if (isset($conn) && $conn instanceof mysqli && !empty($managedOrgIds)) {
         .nav-btn-org { background-color: #fea768; border-bottom: 2px solid #ea580c; }
         .nav-btn-activity { background-color: #dc2626; }
 
-        main { flex: 1; padding: 1.5rem; background-color: #d6e6f9; height: 100%; overflow-y: auto; display: flex; flex-direction: column; gap: 1rem; }
-
-        .debug-container {
-            background: #ffffff;
-            padding: 1rem;
-            border-radius: 8px;
-            border: 1px solid #cbd5e1;
-            font-size: 0.9rem;
-        }
-        .debug-container h3 { margin-bottom: 0.5rem; color: #2563eb; }
+        main { flex: 1; padding: 1.5rem; background-color: #d6e6f9; height: 100%; overflow: hidden; display: flex; flex-direction: column; }
 
         .calendar-container {
             max-width: 1000px;
             width: 100%;
-            height: 600px;
+            height: 100%;
             margin: 0;
             padding: 16px;
             background: #ffffff;
@@ -171,6 +177,19 @@ if (isset($conn) && $conn instanceof mysqli && !empty($managedOrgIds)) {
 
         .fc .fc-toolbar-title { font-size: 1.25rem; font-weight: 700; color: #0f172a; }
         .fc .fc-toolbar { margin-bottom: 0.5rem !important; }
+
+        /* FullCalendar Custom Event Styling */
+        .fc-v-event, .fc-h-event, .fc-daygrid-event {
+            background-color: #2563eb !important;
+            border-color: #1d4ed8 !important;
+            border-radius: 4px;
+            padding: 2px 4px;
+            cursor: pointer;
+        }
+        .fc-event-title {
+            font-weight: 600;
+            font-size: 0.85rem;
+        }
     </style>
 </head>
 <body>
@@ -205,12 +224,6 @@ if (isset($conn) && $conn instanceof mysqli && !empty($managedOrgIds)) {
         </aside>
 
         <main>
-            <!-- Temporary Verification Box to check fetched activities -->
-            <div class="debug-container">
-                <h3>Retrieved Activities Debug View (Not on Calendar yet):</h3>
-                <pre><?php print_r($dbActivities); ?></pre>
-            </div>
-
             <div class="calendar-container">
                 <div id="ecams-calendar"></div>
             </div>
@@ -230,13 +243,14 @@ if (isset($conn) && $conn instanceof mysqli && !empty($managedOrgIds)) {
 
         document.addEventListener('DOMContentLoaded', function() {
             var calendarEl = document.getElementById('ecams-calendar');
+            var dbEvents = <?php echo json_encode($events); ?>;
 
             var calendar = new FullCalendar.Calendar(calendarEl, {
                 initialView: 'dayGridMonth',
                 displayEventTime: false,
                 headerToolbar: { left: 'prev,next today', center: 'title', right: 'dayGridMonth,listYear' },
                 buttonText: { today: 'Today', dayGridMonth: 'Month', listYear: 'List All' },
-                events: [], // Kept empty as requested
+                events: dbEvents, // Render retrieved activities directly on calendar
                 handleWindowResize: true,
                 stickyHeaderDates: true
             });
