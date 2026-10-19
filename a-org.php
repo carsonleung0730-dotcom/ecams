@@ -558,7 +558,6 @@ if ($orgRes) {
                                         Teacher: <span class="teacher-name-bold"><?= htmlspecialchars($org['teacher_name'] ?? 'Unassigned') ?></span>
                                     </div>
                                     <div class="teacher-edit" style="margin-top: 4px; position: relative;">
-                                        <div style="font-weight: 700; color: #475569; font-size: 0.75rem; margin-bottom: 2px;">Teacher Managing:</div>
                                         <input type="text" class="teacher-input edit-tid" value="<?= htmlspecialchars($org['tid'] ?? '') ?>" placeholder="Select or type teacher UID/name" autocomplete="off">
                                         <div class="custom-dropdown-list edit-teacher-dropdown">
                                             <?php foreach ($teachersList as $t): ?>
