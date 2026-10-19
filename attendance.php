@@ -3,20 +3,13 @@ session_start();
 
 require_once 'db.php';
 
-try {
-    $pdo = new PDO("mysql:host=$host;dbname=$dbname;charset=utf8mb4", $username,$password, [
-        PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-        PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC
-    ]);
-} catch (PDOException $e) {
-    die("Database Connection Failed: " . $e->getMessage());
+if (!isset($conn) \vert{}\vert{} !($conn instanceof mysqli)) {
+    die("Database connection error.");
 }
 
 $userId =$_SESSION['uid'] ?? $_SESSION['user_id'] ?? $_SESSION['id'] ?? 2;
 
-$stmt =$pdo->prepare("SELECT uid, name, email, role, class, cid FROM users WHERE uid = ?");
-$stmt->execute([$userId]);
-$userInfo =$stmt->fetch() ?: [
+$userInfo = [
     'uid' => $userId,
     'name' => 'User',
     'email' => 'user@ecams.local',
@@ -25,28 +18,40 @@ $userInfo =$stmt->fetch() ?: [
     'cid' => '1'
 ];
 
-$aid =$_GET['aid'] ?? 1;
+$userStmt =$conn->prepare("SELECT uid, name, email, role, class, cid FROM users WHERE uid = ?");
+if ($userStmt) {$userStmt->bind_param("s", $userId);$userStmt->execute();
+    $userRes =$userStmt->get_result();
+    if ($row =$userRes->fetch_assoc()) {
+        $userInfo =$row;
+    }
+    $userStmt->close();
+}
 
-$actStmt =$pdo->prepare("
+$aid =$_GET['aid'] ?? 1;
+$activity = null;
+
+$actStmt =$conn->prepare("
     SELECT a.aid, a.aname, a.date, a.room, a.timeslot, o.oname, o.oid
     FROM activity a
     JOIN organisations o ON a.oid = o.oid
     WHERE a.aid = ?
 ");
-$actStmt->execute([$aid]);
-$activity =$actStmt->fetch();
+if ($actStmt) {$actStmt->bind_param("i", $aid);$actStmt->execute();
+    $actRes =$actStmt->get_result();
+    if ($row =$actRes->fetch_assoc()) {
+        $activity =$row;
+    }
+    $actStmt->close();
+}
 
 if (!$activity) {
     die("Activity not found. Requested Activity ID (aid): " . htmlspecialchars($aid));
 }
 
-$successMsg = '';
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_attendance'])) {
-    $attendanceData =$_POST['attendance'] ?? [];
-    
+$successMsg = '';$errorMsg = '';
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_attendance'])) {$attendanceData = $_POST['attendance'] ?? [];$conn->begin_transaction();
     try {
-        $pdo->beginTransaction();
-        $updateStmt =$pdo->prepare("
+        $updateStmt =$conn->prepare("
             UPDATE attendance 
             SET attend = ?, rate = ?, `s.rate` = ? 
             WHERE aid = ? AND sid = ?
@@ -57,29 +62,36 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_attendance']))
             $rate = max(0, min(10, intval($data['rate'] ?? 10)));
             $sRate = max(0, min(10, intval($data['s_rate'] ?? 10)));
 
-            $updateStmt->execute([$attend, $rate,$sRate, $aid,$sid]);
+            $updateStmt->bind_param("iiisi", $attend,$rate, $sRate,$aid, $sid);$updateStmt->execute();
         }
+        $updateStmt->close();
 
-        $pdo->commit();
+        $conn->commit();
         
-        // Redirect back to correct dashboard based on role
         $redirectPage = (strtolower($userInfo['role']) === 'teacher') ? 'teacher.php' : 'student.php';
         header("Location: " . $redirectPage);
         exit();
     } catch (Exception $e) {
-        $pdo->rollBack();$errorMsg = "Failed to update attendance: " . $e->getMessage();
+        $conn->rollback();$errorMsg = "Failed to update attendance: " . $e->getMessage();
     }
 }
 
-$memStmt =$pdo->prepare("
-    SELECT u.uid, u.name, at.attend, at.rate, at.`s.rate` as s_rate
+$members = [];
+$memStmt =$conn->prepare("
+    SELECT u.uid, u.name, at.attend, at.rate, at.`s.rate` AS s_rate
     FROM membership m
     JOIN users u ON m.sid = u.uid
     LEFT JOIN attendance at ON at.aid = ? AND at.sid = u.uid
     WHERE m.oid = ?
 ");
-$memStmt->execute([$aid,$activity['oid']]);
-$members =$memStmt->fetchAll();
+if ($memStmt) {
+    $memStmt->bind_param("ii", $aid, $activity['oid']);$memStmt->execute();
+    $memRes =$memStmt->get_result();
+    while ($row =$memRes->fetch_assoc()) {
+        $members[] =$row;
+    }
+    $memStmt->close();
+}
 
 $returnDashboard = (strtolower($userInfo['role']) === 'teacher') ? 'teacher.php' : 'student.php';
 ?>
@@ -233,6 +245,7 @@ $returnDashboard = (strtolower($userInfo['role']) === 'teacher') ? 'teacher.php'
         .btn-submit:hover { background-color: #15803d; }
 
         .alert-success { background-color: #dcfce7; color: #166534; padding: 0.75rem; border-radius: 8px; margin-bottom: 1rem; font-weight: 600; }
+        .alert-error { background-color: #fee2e2; color: #991b1b; padding: 0.75rem; border-radius: 8px; margin-bottom: 1rem; font-weight: 600; }
         
         .modal-overlay {
             position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background-color: rgba(15, 23, 42, 0.5);
@@ -281,6 +294,9 @@ $returnDashboard = (strtolower($userInfo['role']) === 'teacher') ? 'teacher.php'
                 <?php if (!empty($successMsg)): ?>
                     <div class="alert-success"><?= htmlspecialchars($successMsg) ?></div>
                 <?php endif; ?>
+                <?php if (!empty($errorMsg)): ?>
+                    <div class="alert-error"><?= htmlspecialchars($errorMsg) ?></div>
+                <?php endif; ?>
 
                 <div class="activity-info-grid">
                     <div class="info-item"><span>Activity Name:</span> <?= htmlspecialchars($activity['aname']) ?></div>
@@ -293,7 +309,6 @@ $returnDashboard = (strtolower($userInfo['role']) === 'teacher') ? 'teacher.php'
                 <div class="card-title" style="margin-top: 1.5rem;">Organisation Members Attendance</div>
 
                 <form id="attendanceForm" method="POST">
-                    <!-- Hidden field to ensure submit detection passes through JavaScript confirmation -->
                     <input type="hidden" name="submit_attendance" value="1">
 
                     <table class="members-table">
