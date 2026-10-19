@@ -1,5 +1,9 @@
 <?php
-// Session and authentication check
+// Enable error reporting for debugging
+ini_set('display_errors', 1);
+error_reporting(E_ALL);
+
+// Database configuration and session parameters
 require_once 'db.php';   
 session_start();
 
@@ -10,6 +14,47 @@ if (!isset($_SESSION['role']) || strtolower($_SESSION['role']) !== 'student') {
 if (!isset($_SESSION['uid']) && !isset($_SESSION['user_id'])) {
     header('Location: shit.php');
     exit();
+}
+
+$studentUid = $_SESSION['uid'] ?? $_SESSION['user_id'] ?? $_SESSION['id'] ?? 2;
+
+// 1. Fetch organizations where the student is a member
+$managedOrgIds = [];
+if (isset($conn) && $conn instanceof mysqli) {
+    $mOrgStmt = $conn->prepare("
+        SELECT o.oid, o.oname 
+        FROM membership m 
+        JOIN organisations o ON m.oid = o.oid 
+        WHERE m.sid = ? 
+        ORDER BY o.oname ASC
+    ");
+    if ($mOrgStmt) {
+        $mOrgStmt->bind_param("s", $studentUid);
+        $mOrgStmt->execute();
+        $mOrgRes = $mOrgStmt->get_result();
+        while ($row = $mOrgRes->fetch_assoc()) {
+            $managedOrgIds[] = intval($row['oid']);
+        }
+        $mOrgStmt->close();
+    }
+}
+
+// 2. Retrieve all activities for those organizations (Past & Future)
+$dbActivities = [];
+if (isset($conn) && $conn instanceof mysqli && !empty($managedOrgIds)) {
+    $idsString = implode(',', $managedOrgIds);
+    $result = $conn->query("
+        SELECT a.aid, a.oid, a.aname, a.date, a.room, a.timeslot, o.oname 
+        FROM activity a 
+        LEFT JOIN organisations o ON a.oid = o.oid 
+        WHERE a.oid IN ($idsString)
+        ORDER BY a.date DESC
+    ");
+    if ($result) {
+        while ($row = $result->fetch_assoc()) {
+            $dbActivities[] = $row;
+        }
+    }
 }
 ?>
 <!DOCTYPE html>
@@ -86,12 +131,21 @@ if (!isset($_SESSION['uid']) && !isset($_SESSION['user_id'])) {
         .nav-btn-org { background-color: #fea768; border-bottom: 2px solid #ea580c; }
         .nav-btn-activity { background-color: #dc2626; }
 
-        main { flex: 1; padding: 1.5rem; background-color: #d6e6f9; height: 100%; overflow: hidden; display: flex; flex-direction: column; }
+        main { flex: 1; padding: 1.5rem; background-color: #d6e6f9; height: 100%; overflow-y: auto; display: flex; flex-direction: column; gap: 1rem; }
+
+        .debug-container {
+            background: #ffffff;
+            padding: 1rem;
+            border-radius: 8px;
+            border: 1px solid #cbd5e1;
+            font-size: 0.9rem;
+        }
+        .debug-container h3 { margin-bottom: 0.5rem; color: #2563eb; }
 
         .calendar-container {
             max-width: 1000px;
             width: 100%;
-            height: 100%;
+            height: 600px;
             margin: 0;
             padding: 16px;
             background: #ffffff;
@@ -151,15 +205,19 @@ if (!isset($_SESSION['uid']) && !isset($_SESSION['user_id'])) {
         </aside>
 
         <main>
+            <!-- Temporary Verification Box to check fetched activities -->
+            <div class="debug-container">
+                <h3>Retrieved Activities Debug View (Not on Calendar yet):</h3>
+                <pre><?php print_r($dbActivities); ?></pre>
+            </div>
+
             <div class="calendar-container">
-                <!-- Empty Calendar Render Target -->
                 <div id="ecams-calendar"></div>
             </div>
         </main>
     </div>
 
     <script>
-        // Live clock widget
         function updateClock() {
             const now = new Date();
             const timeString = now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true });
@@ -170,7 +228,6 @@ if (!isset($_SESSION['uid']) && !isset($_SESSION['user_id'])) {
         updateClock();
         setInterval(updateClock, 1000);
 
-        // Initialize Empty FullCalendar
         document.addEventListener('DOMContentLoaded', function() {
             var calendarEl = document.getElementById('ecams-calendar');
 
@@ -179,7 +236,7 @@ if (!isset($_SESSION['uid']) && !isset($_SESSION['user_id'])) {
                 displayEventTime: false,
                 headerToolbar: { left: 'prev,next today', center: 'title', right: 'dayGridMonth,listYear' },
                 buttonText: { today: 'Today', dayGridMonth: 'Month', listYear: 'List All' },
-                events: [], // Set to empty array as requested
+                events: [], // Kept empty as requested
                 handleWindowResize: true,
                 stickyHeaderDates: true
             });
