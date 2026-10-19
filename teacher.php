@@ -228,7 +228,7 @@ try {
                 <div class="header-titles">
                     <h1>Extracurricular Activity Management System</h1>
                     <div class="sub-header-row">
-                        <p>Teacher Administration Platform</p>
+                        <p>Efficient, Exquisite, Expertly-crafted ECA managing platform</p>
                         <a href="logout.php" class="btn-logout">Logout</a>
                     </div>
                 </div>
