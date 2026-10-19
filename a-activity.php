@@ -69,7 +69,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             $memStmt->close();
 
             // Properly escaped identifier for columns containing a dot
-            $attStmt = $conn->prepare("INSERT INTO attendance (aid, sid, attend, rate, 's.rate') VALUES (?, ?, 0, 10, 10)");
+            $attStmt = $conn->prepare("INSERT INTO attendance (aid, sid, attend, rate, `s.rate`) VALUES (?, ?, 0, 10, 10)");
             foreach ($members as $member) {
                 $attStmt->bind_param("is", $newAid, $member['sid']);
                 $attStmt->execute();
