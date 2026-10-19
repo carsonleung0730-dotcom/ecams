@@ -269,7 +269,7 @@ $returnDashboard = (strtolower($userInfo['role']) === 'teacher') ? 'teacher.php'
                 <div class="header-titles">
                     <h1>Extracurricular Activity Management System</h1>
                     <div class="sub-header-row">
-                        <p>Activity Attendance Management</p>
+                        <p>Efficient, Exquisite, Expertly-crafted ECA managing platform</p>
                         <a href="logout.php" class="btn-logout">Logout</a>
                     </div>
                 </div>
