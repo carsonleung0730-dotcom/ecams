@@ -14,9 +14,12 @@ if (!isset($_SESSION['uid']) && !isset($_SESSION['user_id'])) {
 }
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
+    // Clear any prior output buffers so HTML/warnings don't corrupt JSON
     while (ob_get_level()) {
         ob_end_clean();
     }
+    ob_start();
+
     header('Content-Type: application/json');
     $action = $_POST['action'];
 
@@ -37,6 +40,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             echo json_encode(['status' => 'error', 'message' => $stmt->error]);
         }
         $stmt->close();
+        
+        $output = ob_get_clean();
+        echo $output;
         exit();
     }
 
@@ -62,7 +68,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             $members = $memRes->fetch_all(MYSQLI_ASSOC);
             $memStmt->close();
 
-            $attStmt = $conn->prepare("INSERT INTO attendance (aid, sid, attend, rate, `s.rate`) VALUES (?, ?, 0, 10, 10)");
+            // Properly escaped identifier for columns containing a dot
+            $attStmt = $conn->prepare("INSERT INTO attendance (aid, sid, attend, rate, `s`.`rate`) VALUES (?, ?, 0, 10, 10)");
             foreach ($members as $member) {
                 $attStmt->bind_param("is", $newAid, $member['sid']);
                 $attStmt->execute();
@@ -75,6 +82,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             $conn->rollback();
             echo json_encode(['status' => 'error', 'message' => $e->getMessage()]);
         }
+
+        $output = ob_get_clean();
+        echo $output;
         exit();
     }
 
@@ -99,6 +109,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             $conn->rollback();
             echo json_encode(['status' => 'error', 'message' => $e->getMessage()]);
         }
+
+        $output = ob_get_clean();
+        echo $output;
         exit();
     }
 }
@@ -144,7 +157,6 @@ $events = array_map(function($act) {
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
         
-        /* Prevent page scrolling */
         html, body {
             height: 100%;
             overflow: hidden;
