@@ -56,7 +56,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         $conn->begin_transaction();
         try {
             $stmt = $conn->prepare("INSERT INTO activity (oid, aname, date, room, timeslot) VALUES (?, ?, ?, ?, ?)");
-            $stmt->bind_param("sssisi", $oid, $aname, $date, $room, $timeslot);
+            $stmt->bind_param("sssis", $oid, $aname, $date, $room, $timeslot);
             $stmt->execute();
             $newAid = $conn->insert_id;
             $stmt->close();
