@@ -14,7 +14,7 @@ if (!isset($_SESSION['uid']) && !isset($_SESSION['user_id'])) {
 
 $studentUid =$_SESSION['uid'] ?? $_SESSION['user_id'] ?? $_SESSION['id'] ?? 2;
 
-// 1. Fetch organizations where the student is a member
+// 1. Fetch ALL organizations where the student is a member (supports multiple clubs)
 $managedOrgIds = [];
 if (isset($conn) &&$conn instanceof mysqli) {
     $mOrgStmt =$conn->prepare("
@@ -33,20 +33,27 @@ if (isset($conn) &&$conn instanceof mysqli) {
     }
 }
 
-// 2. Fetch activities ONLY for the organizations this student belongs to
+// 2. Fetch activities for ALL organizations this student belongs to
 $dbActivities = [];
 if (isset($conn) && $conn instanceof mysqli && !empty($managedOrgIds)) {
-    $idsString = implode(',',$managedOrgIds);
-    $result =$conn->query("
+    // Dynamically build placeholders for multiple organization IDs to prevent SQL syntax errors
+    $placeholders = implode(',', array_fill(0, count($managedOrgIds), '?'));
+    $types = str_repeat('i', count($managedOrgIds));
+    
+    $actStmt =$conn->prepare("
         SELECT a.aid, a.oid, a.aname, a.date, a.room, a.timeslot, o.oname 
         FROM activity a 
         LEFT JOIN organisations o ON a.oid = o.oid 
-        WHERE a.oid IN ($idsString)
+        WHERE a.oid IN ($placeholders)
     ");
-    if ($result) {
+    
+    if ($actStmt) {
+        $actStmt->bind_param($types, ...$managedOrgIds);$actStmt->execute();
+        $result =$actStmt->get_result();
         while ($row =$result->fetch_assoc()) {
             $dbActivities[] =$row;
         }
+        $actStmt->close();
     }
 }
 
@@ -136,6 +143,8 @@ $events = array_map(function($act) {
             background-color: #f1f5f9;
         }
 
+        .fc-daygrid-day.has-event:hover { outline: 4px double #2563eb !important; outline-offset: -4px; }
+
         .app-body { flex: 1; display: flex; height: calc(100vh - 110px); position: relative; overflow: hidden; }
 
         .side-panel { width: 280px; background-color: #ffffff; border-right: 4px double #1037e572; display: flex; flex-direction: column; flex-shrink: 0; height: 100%; }
@@ -172,6 +181,55 @@ $events = array_map(function($act) {
         .fc .fc-toolbar-title { font-size: 1.25rem; font-weight: 700; color: #0f172a; }
         .fc .fc-toolbar { margin-bottom: 0.5rem !important; }
         .fc-v-event, .fc-h-event, .fc-daygrid-event { background-color: #2563eb !important; border-radius: 4px; }
+
+        /* Right Panel Styles (Read-Only) */
+        .activity-details-panel {
+            position: fixed; top: 130px; right: 20px; width: clamp(220px, 25vw, 380px); min-width: 220px;
+            max-width: calc(100vw - 30px); height: auto; min-height: 320px; max-height: calc(100vh - 160px);
+            background-color: #ffffff; border: 1px solid #cbd5e1; box-shadow: 0 10px 25px rgba(0, 0, 0, 0.15);
+            border-radius: 8px; z-index: 1000; display: none; flex-direction: column; resize: both; overflow: hidden; box-sizing: border-box;
+        }
+        .activity-details-panel.active { display: flex; }
+
+        .resize-handle-bl { position: absolute; left: 0; bottom: 0; width: 16px; height: 16px; cursor: nesw-resize; z-index: 1100; }
+        .resize-handle-bl::after {
+            content: ''; position: absolute; left: 3px; bottom: 3px; width: 6px; height: 6px;
+            border-left: 2px solid #94a3b8; border-bottom: 2px solid #94a3b8;
+        }
+
+        .panel-header { padding: 0.75rem 1rem; background-color: #f8fafc; border-bottom: 2px solid #e2e8f0; display: flex; justify-content: space-between; align-items: center; cursor: move; user-select: none; }
+        .header-tabs { display: flex; align-items: center; gap: 8px; font-size: 0.95rem; font-weight: 700; }
+        .tab-btn { background: none; border: none; font-size: 0.9rem; font-weight: 700; color: #2563eb; cursor: pointer; padding: 4px 8px; border-radius: 4px; }
+        .close-btn { background: none; border: none; font-size: 1.5rem; color: #64748b; cursor: pointer; line-height: 1; }
+        .close-btn:hover { color: #0f172a; }
+
+        .panel-body-content { padding: 1.25rem; flex: 1; overflow-y: auto; display: flex; flex-direction: column; position: relative; }
+
+        .btn-return-back {
+            display: inline-flex; align-items: center; gap: 4px; background-color: #f1f5f9; color: #334155;
+            border: 1px solid #cbd5e1; border-radius: 4px; padding: 0.35rem 0.65rem; font-size: 0.8rem;
+            font-weight: 700; cursor: pointer; margin-bottom: 0.85rem; align-self: flex-start; transition: background-color 0.15s ease;
+        }
+        .btn-return-back:hover { background-color: #e2e8f0; color: #0f172a; }
+
+        .activity-cards-list { display: flex; flex-direction: column; gap: 0.75rem; margin-top: 0.25rem; }
+        .activity-card {
+            background-color: #ffffff; border: 1.5px solid #e2e8f0; border-left: 5px solid #2563eb;
+            border-radius: 6px; padding: 0.85rem 1rem; cursor: pointer; transition: all 0.2s ease; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+        }
+        .activity-card:hover {
+            border-color: #93c5fd; border-left-color: #1d4ed8; background-color: #f8fafc;
+            transform: translateY(-1px); box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.08);
+        }
+        .activity-card-title { font-size: 0.95rem; font-weight: 700; color: #1e293b; }
+        .activity-card-sub { font-size: 0.75rem; color: #64748b; margin-top: 4px; }
+
+        .field-group { margin-bottom: 0.85rem; display: flex; flex-direction: column; gap: 0.35rem; }
+        .field-group label { font-size: 0.8rem; font-weight: 700; color: #475569; text-transform: uppercase; letter-spacing: 0.04em; }
+        .field-group input, .field-group select {
+            width: 100%; padding: 0.6rem 0.75rem; border: 1px solid #cbd5e1; border-radius: 6px;
+            font-size: 0.95rem; color: #64748b; outline: none; background-color: #f1f5f9; cursor: not-allowed;
+        }
     </style>
 </head>
 <body>
@@ -210,6 +268,60 @@ $events = array_map(function($act) {
                 <div id="ecams-calendar"></div>
             </div>
         </main>
+
+        <!-- Read-Only Right Panel -->
+        <div class="activity-details-panel" id="activityPanel">
+            <div class="resize-handle-bl" id="resizeHandleBL"></div>
+
+            <div class="panel-header" id="panelHeader">
+                <div class="header-tabs">
+                    <button type="button" class="tab-btn active" id="tabExisting">Organisation Activities (Read-Only)</button>
+                </div>
+                <button class="close-btn" id="closePanelBtn">&times;</button>
+            </div>
+            
+            <div class="panel-body-content">
+                <div id="activitiesListView" style="display: none;">
+                    <div class="activity-cards-list" id="activityCardsContainer"></div>
+                </div>
+
+                <div id="activityFormView" style="display: none;">
+                    <button type="button" class="btn-return-back" id="returnBackBtn" style="display: none;">&larr; Back</button>
+
+                    <form id="activityForm" onsubmit="return false;">
+                        <div class="field-group">
+                            <label for="field_aid">Activity ID (aid)</label>
+                            <input type="text" id="field_aid" name="aid" readonly disabled>
+                        </div>
+
+                        <div class="field-group">
+                            <label for="field_oid">Organisation</label>
+                            <input type="text" id="field_oid" name="oid" readonly disabled>
+                        </div>
+
+                        <div class="field-group">
+                            <label for="field_aname">Activity Name (aname)</label>
+                            <input type="text" id="field_aname" name="aname" readonly disabled>
+                        </div>
+
+                        <div class="field-group">
+                            <label for="field_date">Date (date)</label>
+                            <input type="date" id="field_date" name="date" disabled>
+                        </div>
+
+                        <div class="field-group">
+                            <label for="field_room">Room (room)</label>
+                            <input type="number" id="field_room" name="room" readonly disabled>
+                        </div>
+
+                        <div class="field-group">
+                            <label for="field_timeslot">Time Slot</label>
+                            <input type="text" id="field_timeslot" name="timeslot" readonly disabled>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
     </div>
 
     <script>
@@ -226,6 +338,23 @@ $events = array_map(function($act) {
         document.addEventListener('DOMContentLoaded', function() {
             var calendarEl = document.getElementById('ecams-calendar');
             var dbEvents = <?php echo json_encode($events, JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP); ?>;
+
+            var currentDayActivities = [];
+            var panel = document.getElementById('activityPanel');
+            var activitiesListView = document.getElementById('activitiesListView');
+            var activityCardsContainer = document.getElementById('activityCardsContainer');
+            var activityFormView = document.getElementById('activityFormView');
+            var returnBackBtn = document.getElementById('returnBackBtn');
+
+            function resetPanelPosition() {
+                if (panel) {
+                    panel.style.top = '';
+                    panel.style.left = '';
+                    panel.style.right = '';
+                    panel.style.width = '';
+                    panel.style.height = '';
+                }
+            }
 
             function getTodayDateStr() {
                 const now = new Date();
@@ -257,12 +386,128 @@ $events = array_map(function($act) {
                 stickyHeaderDates: true,
 
                 datesSet: function() {
+                    markCellsWithEvents();
                     markPastDays();
+                },
+
+                dateClick: function(info) {
+                    var clickedDateStr = info.dateStr;
+
+                    currentDayActivities = calendar.getEvents().filter(function(e) {
+                        return e.startStr.split('T')[0] === clickedDateStr;
+                    });
+
+                    if (currentDayActivities.length === 0) {
+                        closeRightPanel();
+                        return;
+                    }
+
+                    openPanelWithActivityList(currentDayActivities);
+                },
+
+                eventClick: function(info) {
+                    var eventDateStr = info.event.startStr.split('T')[0];
+                    currentDayActivities = calendar.getEvents().filter(function(e) {
+                        return e.startStr.split('T')[0] === eventDateStr;
+                    });
+                    
+                    openPanelWithActivityList(currentDayActivities);
+                    var clickedEvt = currentDayActivities.find(e => e.id == info.event.id);
+                    if (clickedEvt) {
+                        showActivityDetails(clickedEvt);
+                    }
                 }
             });
 
             calendar.render();
+
+            function markCellsWithEvents() {
+                document.querySelectorAll('.fc-daygrid-day').forEach(function(el) {
+                    el.classList.remove('has-event');
+                });
+                calendar.getEvents().forEach(function(evt) {
+                    if (evt.start) {
+                        var dStr = evt.startStr.split('T')[0];
+                        var cell = document.querySelector('.fc-daygrid-day[data-date="' + dStr + '"]');
+                        if (cell) {
+                            cell.classList.add('has-event');
+                        }
+                    }
+                });
+            }
+
+            markCellsWithEvents();
             markPastDays();
+
+            function openPanelWithActivityList(activitiesList) {
+                resetPanelPosition();
+                if (activityCardsContainer) {
+                    activityCardsContainer.innerHTML = '';
+                    
+                    activitiesList.forEach(function(evt) {
+                        var card = document.createElement('div');
+                        card.className = 'activity-card';
+                        
+                        var titleEl = document.createElement('div');
+                        titleEl.className = 'activity-card-title';
+                        titleEl.textContent = evt.title;
+
+                        var subEl = document.createElement('div');
+                        subEl.className = 'activity-card-sub';
+                        var orgName = evt.extendedProps.oname || 'Unknown Organisation';
+                        subEl.textContent = 'Org: ' + orgName + ' | ' + (evt.extendedProps.timeslot || 'Lunch Recess');
+
+                        card.appendChild(titleEl);
+                        card.appendChild(subEl);
+
+                        card.addEventListener('click', function() {
+                            showActivityDetails(evt);
+                        });
+
+                        activityCardsContainer.appendChild(card);
+                    });
+                }
+
+                if (activitiesListView) activitiesListView.style.display = 'block';
+                if (activityFormView) activityFormView.style.display = 'none';
+                if (panel) panel.classList.add('active');
+            }
+
+            function showActivityDetails(eventObj) {
+                if (activitiesListView) activitiesListView.style.display = 'none';
+                if (activityFormView) activityFormView.style.display = 'block';
+                if (returnBackBtn) returnBackBtn.style.display = 'inline-flex';
+
+                loadActivityIntoForm(eventObj);
+            }
+
+            function loadActivityIntoForm(eventObj) {
+                var props = eventObj.extendedProps;
+
+                document.getElementById('field_aid').value = props.aid || eventObj.id;
+                document.getElementById('field_oid').value = (props.oid || '') + ' - ' + (props.oname || '');
+                document.getElementById('field_aname').value = props.aname || eventObj.title;
+                document.getElementById('field_date').value = props.date || eventObj.startStr.split('T')[0];
+                document.getElementById('field_room').value = props.room || '';
+                document.getElementById('field_timeslot').value = props.timeslot || 'Lunch Recess';
+            }
+
+            if (returnBackBtn) {
+                returnBackBtn.addEventListener('click', function() {
+                    if (activityFormView) activityFormView.style.display = 'none';
+                    if (activitiesListView) activitiesListView.style.display = 'block';
+                });
+            }
+
+            function closeRightPanel() {
+                if (panel) panel.classList.remove('active');
+                resetPanelPosition();
+            }
+
+            var closeBtn = document.getElementById('closePanelBtn');
+            if (closeBtn) {
+                closeBtn.addEventListener('click', closeRightPanel);
+            }
         });
     </script>
 </body>
