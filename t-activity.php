@@ -1,5 +1,6 @@
 <?php
-require_once 'db.php';
+// Database configuration and session parameters loaded FIRST to avoid warnings
+require_once 'db.php';   
 session_start();
 
 if (!isset($_SESSION['role']) || strtolower($_SESSION['role']) !== 'teacher') {
@@ -23,12 +24,17 @@ if (isset($conn) && $conn instanceof mysqli) {
     $mOrgRes = $mOrgStmt->get_result();
     while ($row = $mOrgRes->fetch_assoc()) {
         $managedOrgsList[] = $row;
-        $managedOrgIds[] = $row['oid'];
+        $managedOrgIds[] = intval($row['oid']);
     }
     $mOrgStmt->close();
 }
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
+    while (ob_get_level()) {
+        ob_end_clean();
+    }
+    ob_start();
+
     header('Content-Type: application/json');
     $action = $_POST['action'];
 
@@ -52,8 +58,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         $hasAccess = $chkRes->num_rows > 0;
         $chk->close();
 
-        if (!$hasAccess || !in_array($oid, $managedOrgIds)) {
+        // Database-level verification for target organization
+        $orgChk = $conn->prepare("SELECT oid FROM organisations WHERE oid = ? AND tid = ?");
+        $orgChk->bind_param("is", $oid, $teacherUid);
+        $orgChk->execute();
+        $orgValid = $orgChk->get_result()->num_rows > 0;
+        $orgChk->close();
+
+        if (!$hasAccess || !$orgValid) {
             echo json_encode(['status' => 'error', 'message' => 'Unauthorized: You can only modify activities for your own organisations.']);
+            $output = ob_get_clean();
+            echo $output;
             exit();
         }
 
@@ -65,6 +80,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             echo json_encode(['status' => 'error', 'message' => $stmt->error]);
         }
         $stmt->close();
+
+        $output = ob_get_clean();
+        echo $output;
         exit();
     }
 
@@ -75,9 +93,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         $room = intval($_POST['room']);
         $timeslot = trim($_POST['timeslot']);
 
-        // Strict Security check: ensure organisation is managed by this teacher
-        if (!in_array($oid, $managedOrgIds)) {
+        // Bulletproof Database-level Security check: verify ownership directly from DB
+        $orgChk = $conn->prepare("SELECT oid FROM organisations WHERE oid = ? AND tid = ?");
+        $orgChk->bind_param("is", $oid, $teacherUid);
+        $orgChk->execute();
+        $orgValid = $orgChk->get_result()->num_rows > 0;
+        $orgChk->close();
+
+        if (!$orgValid) {
             echo json_encode(['status' => 'error', 'message' => 'Unauthorized: You can only create activities for organisations you manage.']);
+            $output = ob_get_clean();
+            echo $output;
             exit();
         }
 
@@ -96,6 +122,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             $members = $memRes->fetch_all(MYSQLI_ASSOC);
             $memStmt->close();
 
+            // Fixed identifier for column named s.rate
             $attStmt = $conn->prepare("INSERT INTO attendance (aid, sid, attend, rate, `s.rate`) VALUES (?, ?, 0, 10, 10)");
             foreach ($members as $member) {
                 $attStmt->bind_param("is", $newAid, $member['sid']);
@@ -109,6 +136,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             $conn->rollback();
             echo json_encode(['status' => 'error', 'message' => $e->getMessage()]);
         }
+
+        $output = ob_get_clean();
+        echo $output;
         exit();
     }
 
@@ -129,6 +159,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
 
         if (!$hasAccess) {
             echo json_encode(['status' => 'error', 'message' => 'Unauthorized: You can only delete activities for your own organisations.']);
+            $output = ob_get_clean();
+            echo $output;
             exit();
         }
 
@@ -150,6 +182,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             $conn->rollback();
             echo json_encode(['status' => 'error', 'message' => $e->getMessage()]);
         }
+
+        $output = ob_get_clean();
+        echo $output;
         exit();
     }
 }
@@ -171,7 +206,7 @@ $stmt = $conn->query("
 $dbActivities = $stmt ? $stmt->fetch_all(MYSQLI_ASSOC) : [];
 
 $events = array_map(function($act) use ($managedOrgIds) {
-    $isManaged = in_array($act['oid'], $managedOrgIds);
+    $isManaged = in_array(intval($act['oid']), $managedOrgIds, true);
     return [
         'id' => $act['aid'],
         'title' => $act['aname'],
@@ -467,6 +502,7 @@ $events = array_map(function($act) use ($managedOrgIds) {
             <a href="t-org.php" class="nav-btn nav-btn-org">
                 <img src="org.png" alt="Organization" class="btn-icon">
             </a>
+            <!-- Updated act.png navigation point to teacher.php -->
             <a href="teacher.php" class="nav-btn nav-btn-activity is-active" id="navBtnActivity">
                 <img src="act.png" alt="Activity" class="btn-icon">
             </a>
@@ -1023,7 +1059,7 @@ $events = array_map(function($act) use ($managedOrgIds) {
                     formData.append('timeslot', document.getElementById('field_timeslot').value);
                 }
 
-                fetch('teacher.php', {
+                fetch('t-activity.php', {
                     method: 'POST',
                     body: formData
                 })
