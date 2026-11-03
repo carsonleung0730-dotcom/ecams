@@ -21,6 +21,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     $oid = preg_replace('/[^a-zA-Z0-9_-]/', '_', $_POST['oid']);
     $imageData = $_POST['image'];
 
+    // Security check: ensure teacher only updates images for what they manage
+    $chk = $conn->prepare("SELECT tid FROM organisations WHERE oid = ?");
+    $chk->bind_param("s", $_POST['oid']);
+    $chk->execute();
+    $chk->bind_result($orgTid);
+    $chk->fetch();
+    $chk->close();
+
+    if ($orgTid != $teacherUid) {
+        echo json_encode(['success' => false, 'message' => 'Unauthorized: You can only modify organisations you manage.']);
+        exit;
+    }
+
     if (!is_dir('uploads')) {
         mkdir('uploads', 0777, true);
     }
@@ -41,6 +54,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'delete_image') {
     header('Content-Type: application/json');
     $oid = preg_replace('/[^a-zA-Z0-9_-]/', '_', $_POST['oid'] ?? '');
+    
+    // Security check: ensure teacher only deletes images for what they manage
+    $chk = $conn->prepare("SELECT tid FROM organisations WHERE oid = ?");
+    $chk->bind_param("s", $oid);
+    $chk->execute();
+    $chk->bind_result($orgTid);
+    $chk->fetch();
+    $chk->close();
+
+    if ($orgTid != $teacherUid) {
+        echo json_encode(['success' => false, 'message' => 'Unauthorized: You can only modify organisations you manage.']);
+        exit;
+    }
+
     $filePath = "uploads/org_{$oid}.png";
     
     if (file_exists($filePath)) {
@@ -51,66 +78,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         }
     } else {
         echo json_encode(['success' => true]);
-    }
-    exit;
-}
-
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'create_org') {
-    header('Content-Type: application/json');
-    $oid = trim($_POST['oid'] ?? '');
-    $oname = trim($_POST['oname'] ?? '');
-    $tid = trim($_POST['tid'] ?? null);
-    $members = $_POST['members'] ?? [];
-    $monitors = $_POST['monitors'] ?? [];
-
-    if (empty($oid) || empty($oname)) {
-        echo json_encode(['success' => false, 'message' => 'Organisation ID and Name are required.']);
-        exit;
-    }
-
-    $chk = $conn->prepare("SELECT COUNT(*) FROM organisations WHERE oid = ?");
-    $chk->bind_param("s", $oid);
-    $chk->execute();
-    $chk->bind_result($count);
-    $chk->fetch();
-    $chk->close();
-
-    if ($count > 0) {
-        echo json_encode(['success' => false, 'message' => 'Organisation ID already exists.']);
-        exit;
-    }
-
-    $conn->begin_transaction();
-    try {
-        $stmt = $conn->prepare("INSERT INTO organisations (oid, oname, tid) VALUES (?, ?, ?)");
-        $finalTid = empty($tid) ? null : $tid;
-        $stmt->bind_param("sss", $oid, $oname, $finalTid);
-        $stmt->execute();
-        $stmt->close();
-
-        if (!empty($members)) {
-            $memStmt = $conn->prepare("INSERT INTO membership (oid, sid) VALUES (?, ?)");
-            foreach ($members as $sid) {
-                $memStmt->bind_param("ss", $oid, $sid);
-                $memStmt->execute();
-            }
-            $memStmt->close();
-        }
-
-        if (!empty($monitors)) {
-            $monStmt = $conn->prepare("INSERT INTO monitor (oid, mid) VALUES (?, ?)");
-            foreach ($monitors as $mid) {
-                $monStmt->bind_param("ss", $oid, $mid);
-                $monStmt->execute();
-            }
-            $monStmt->close();
-        }
-
-        $conn->commit();
-        echo json_encode(['success' => true]);
-    } catch (Exception $e) {
-        $conn->rollback();
-        echo json_encode(['success' => false, 'message' => $e->getMessage()]);
     }
     exit;
 }
@@ -280,7 +247,7 @@ if ($tRes) {
 }
 
 $studentsList = [];
-$sRes = $conn->query("SELECT uid, name FROM users WHERE role = 'student' ORDER BY CAST(uid AS UNSIGNED) ASC, uid ASC");
+$sRes = $conn->query("SELECT uid, name, class, cid FROM users WHERE role = 'student' ORDER BY CAST(uid AS UNSIGNED) ASC, uid ASC");
 if ($sRes) {
     $studentsList = $sRes->fetch_all(MYSQLI_ASSOC);
 }
@@ -327,7 +294,7 @@ if ($orgRes) {
 
         $safeOid = preg_replace('/[^a-zA-Z0-9_-]/', '_', $org['oid']);
         $existingImg = "uploads/org_{$safeOid}.png";
-        $org['image_path'] = file_exists($existingImg) ? $existingImg : '';
+        $org['image_path'] = file_exists($existingImg) ? $existingImg . '?t=' . filemtime($existingImg) : '';
         
         $orgsData[] = $org;
     }
@@ -481,9 +448,6 @@ if ($orgRes) {
         .checklist-item.state-member .state-box { background-color: #2563eb; border-color: #1d4ed8; }
         .checklist-item.state-monitor .state-box { background-color: #dc2626; border-color: #991b1b; }
         
-        .btn-save-org { width: 100%; background-color: #2563eb; color: #ffffff; border: none; padding: 8px; border-radius: 6px; font-weight: 700; cursor: pointer; margin-top: 8px; flex-shrink: 0; display: none; }
-        .btn-save-org:hover { background-color: #1d4ed8; }
-        
         .crop-modal-overlay {
             position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
             background-color: rgba(15, 23, 42, 0.7); z-index: 2000; display: flex; align-items: center; justify-content: center; opacity: 0; pointer-events: none; transition: opacity 0.2s ease;
@@ -499,14 +463,13 @@ if ($orgRes) {
         .btn-modal-cancel { background-color: #64748b; }
         .btn-modal-confirm { background-color: #2563eb; }
 
-        /* Editing Mode Scoping Switchers */
+        /* Editing Mode Scoping Switchers for Managed Orgs */
         body.editing-mode .org-vertical-box[data-is-managed="true"] .delete-arrow-btn,
         body.editing-mode .org-vertical-box[data-is-managed="true"] .btn-upload-file,
         body.editing-mode .org-vertical-box[data-is-managed="true"] .org-title-edit,
         body.editing-mode .org-vertical-box[data-is-managed="true"] .teacher-input,
         body.editing-mode .org-vertical-box[data-is-managed="true"] .member-search-input,
         body.editing-mode .org-vertical-box[data-is-managed="true"] .members-view-edit,
-        body.editing-mode .org-vertical-box[data-is-managed="true"] .btn-save-org,
         body.editing-mode .org-vertical-box[data-is-managed="true"].has-image .delete-photo-btn {
             display: flex !important;
         }
@@ -546,7 +509,7 @@ if ($orgRes) {
 
     <div class="app-body">
         <aside class="side-panel">
-            <a href="teacher.php" class="nav-btn nav-btn-org is-active" id="navBtnOrg">
+            <a href="t-org.php" class="nav-btn nav-btn-org is-active" id="navBtnOrg">
                 <img src="org.png" alt="Organisation" class="btn-icon">
             </a>
             <a href="t-activity.php" class="nav-btn nav-btn-activity">
@@ -559,7 +522,7 @@ if ($orgRes) {
 
         <main id="mainContainer">
             <div class="floating-controls">
-                <div class="control-box filter-managed-btn" id="filterManagedBtn">Only Show Organisations I Manage</div>
+                <div class="control-box filter-managed-btn filter-active" id="filterManagedBtn">Show All Organisations</div>
                 <div class="control-box" id="editingModeBtn">Editing Mode</div>
                 <div class="control-box grey" id="modifyBtn" style="display: none;">Modify</div>
             </div>
@@ -570,7 +533,7 @@ if ($orgRes) {
                         $hasImage = !empty($org['image_path']);
                         $isManagedByMe = ($org['tid'] == $teacherUid);
                     ?>
-                        <div class="org-vertical-box existing-org-box <?= $hasImage ? 'has-image' : '' ?>" data-oid="<?= htmlspecialchars($org['oid']) ?>" data-tid="<?= htmlspecialchars($org['tid'] ?? '') ?>" data-is-managed="<?= $isManagedByMe ? 'true' : 'false' ?>" data-original-name="<?= htmlspecialchars($org['oname']) ?>" data-original-tid="<?= htmlspecialchars($org['tid'] ?? '') ?>">
+                        <div class="org-vertical-box existing-org-box <?= $hasImage ? 'has-image' : '' ?>" data-oid="<?= htmlspecialchars($org['oid']) ?>" data-tid="<?= htmlspecialchars($org['tid'] ?? '') ?>" data-is-managed="<?= $isManagedByMe ? 'true' : 'false' ?>" data-original-name="<?= htmlspecialchars($org['oname']) ?>" data-original-tid="<?= htmlspecialchars($org['tid'] ?? '') ?>" style="<?= $isManagedByMe ? '' : 'display: none;' ?>">
                             <img src="arrow.png" alt="Delete" class="delete-arrow-btn delete-org-trigger" title="Delete Organisation">
 
                             <div class="org-header-section">
@@ -640,7 +603,7 @@ if ($orgRes) {
                             </div>
 
                             <div class="members-table-wrapper checklist-container members-view-edit" style="display: none;">
-                                <input type="text" class="member-search-input" placeholder="Search student...">
+                                <input type="text" class="member-search-input" placeholder="Search student (ID, Name, Class)...">
                                 <div class="checklist-items-scroll">
                                     <?php 
                                     $memberUids = array_column($org['members'], 'uid');
@@ -650,10 +613,15 @@ if ($orgRes) {
                                         $stateClass = '';
                                         if ($isMon) $stateClass = 'state-monitor';
                                         else if ($isMem) $stateClass = 'state-member';
+
+                                        $sClass = $s['class'] ?? '';
+                                        $sNum = $s['cid'] ?? '';
+                                        $sCombined = $sClass . $sNum;
+                                        $searchString = strtolower(trim("{$s['uid']} {$s['name']} {$sClass} {$sNum} {$sCombined}"));
                                     ?>
-                                        <div class="checklist-item <?= $stateClass ?>" data-search="<?= htmlspecialchars(strtolower($s['uid'] . ' ' . $s['name'])) ?>" data-uid="<?= htmlspecialchars($s['uid']) ?>">
+                                        <div class="checklist-item <?= $stateClass ?>" data-search="<?= htmlspecialchars($searchString) ?>" data-uid="<?= htmlspecialchars($s['uid']) ?>">
                                             <span class="state-box"></span>
-                                            <span>[<?= htmlspecialchars($s['uid']) ?>] <?= htmlspecialchars($s['name']) ?></span>
+                                            <span>[<?= htmlspecialchars($s['uid']) ?>] <?= htmlspecialchars($s['name']) ?><?= $sClass ? " ($sClass$sNum)" : "" ?></span>
                                         </div>
                                     <?php endforeach; ?>
                                 </div>
@@ -661,49 +629,6 @@ if ($orgRes) {
                         </div>
                     <?php endforeach; ?>
                 <?php endif; ?>
-
-                <div class="org-vertical-box" id="newOrgBox" data-oid="new_org" style="display: none;">
-                    <div class="org-header-section">
-                        <div class="org-title-row">
-                            <input type="text" id="newOrgId" class="org-title-input" placeholder="ID" style="width: 42px; flex-shrink: 0;">
-                            <input type="text" id="newOrgName" class="org-title-input" placeholder="New Organisation" style="flex: 1; min-width: 0;">
-                            <label for="file-input-new" class="btn-upload-file photo-upload-btn" style="flex-shrink: 0;">Choose photo</label>
-                            <input type="file" id="file-input-new" class="device-file-input" accept="image/*" style="display: none;">
-                        </div>
-
-                        <div class="image-preview-wrapper" style="display: none;">
-                            <img src="" alt="Preview" class="org-image-preview">
-                            <img src="arrow.png" alt="Delete Photo" class="delete-photo-btn delete-photo-trigger" title="Delete Photo">
-                        </div>
-
-                        <div class="teacher-info">
-                            <div style="margin-bottom: 2px; font-weight: 700; color: #475569;">Teacher Managing:</div>
-                            <input type="text" id="newOrgTeacher" class="teacher-input" placeholder="Select or type teacher UID/name" autocomplete="off" style="display: block;" value="<?= htmlspecialchars($teacherUid) ?>">
-                            <div id="customTeacherDropdown" class="custom-dropdown-list">
-                                <?php foreach ($teachersList as $t): ?>
-                                    <div class="custom-dropdown-item" data-uid="<?= htmlspecialchars($t['uid']) ?>" data-name="<?= htmlspecialchars($t['name']) ?>">
-                                        [<?= htmlspecialchars($t['uid']) ?>] <?= htmlspecialchars($t['name']) ?>
-                                    </div>
-                                <?php endforeach; ?>
-                            </div>
-                        </div>
-                    </div>
-
-                    <div class="members-section-title">Members &amp; Monitors Checklist:</div>
-                    <input type="text" id="memberSearch" class="member-search-input" placeholder="Search UID or name..." style="display: block;">
-                    <div class="members-table-wrapper checklist-container" id="membersChecklistContainer">
-                        <div class="checklist-items-scroll">
-                            <?php foreach ($studentsList as $s): ?>
-                                <div class="checklist-item" data-search="<?= htmlspecialchars(strtolower($s['uid'] . ' ' . $s['name'])) ?>" data-uid="<?= htmlspecialchars($s['uid']) ?>">
-                                    <span class="state-box"></span>
-                                    <span>[<?= htmlspecialchars($s['uid']) ?>] <?= htmlspecialchars($s['name']) ?></span>
-                                </div>
-                            <?php endforeach; ?>
-                        </div>
-                    </div>
-
-                    <button type="button" class="btn-save-org" id="saveNewOrgBtn" style="display: block;">Create Organisation</button>
-                </div>
             </div>
         </main>
     </div>
@@ -795,40 +720,38 @@ if ($orgRes) {
         }
 
         let isEditingMode = false;
-        let isFilterManagedActive = false;
+        let showAllOrgs = false; // Default: show only managed organisations
         let hasChanges = false;
         const editingModeBtn = document.getElementById('editingModeBtn');
         const filterManagedBtn = document.getElementById('filterManagedBtn');
         const modifyBtn = document.getElementById('modifyBtn');
-        const newOrgBox = document.getElementById('newOrgBox');
 
         editingModeBtn.addEventListener('click', function() {
             isEditingMode = !isEditingMode;
             if (isEditingMode) {
                 document.body.classList.add('editing-mode');
                 editingModeBtn.textContent = 'Close Editing Mode';
-                newOrgBox.style.display = 'flex';
                 modifyBtn.style.display = 'block';
                 modifyBtn.className = 'control-box grey';
                 updateBoxColorsOnScroll();
             } else {
-                window.location.href = window.location.pathname + (isFilterManagedActive ? '?filter=managed' : '');
+                window.location.href = window.location.pathname + (showAllOrgs ? '?filter=all' : '');
             }
         });
 
         filterManagedBtn.addEventListener('click', function() {
-            isFilterManagedActive = !isFilterManagedActive;
-            if (isFilterManagedActive) {
-                filterManagedBtn.classList.add('filter-active');
-                filterManagedBtn.textContent = 'Show All Organisations';
-            } else {
+            showAllOrgs = !showAllOrgs;
+            if (showAllOrgs) {
                 filterManagedBtn.classList.remove('filter-active');
                 filterManagedBtn.textContent = 'Only Show Organisations I Manage';
+            } else {
+                filterManagedBtn.classList.add('filter-active');
+                filterManagedBtn.textContent = 'Show All Organisations';
             }
 
             document.querySelectorAll('.existing-org-box').forEach(box => {
                 const isManaged = box.getAttribute('data-is-managed') === 'true';
-                if (isFilterManagedActive && !isManaged) {
+                if (!showAllOrgs && !isManaged) {
                     box.style.display = 'none';
                 } else {
                     box.style.display = 'flex';
@@ -842,7 +765,7 @@ if ($orgRes) {
             if (urlParams.get('editing') === 'true') {
                 editingModeBtn.click();
             }
-            if (urlParams.get('filter') === 'managed') {
+            if (urlParams.get('filter') === 'all') {
                 filterManagedBtn.click();
             }
             if (urlParams.get('scroll') === 'right') {
@@ -862,7 +785,7 @@ if ($orgRes) {
 
         document.addEventListener('click', function(e) {
             const checklistItem = e.target.closest('.checklist-item');
-            if (checklistItem && (isEditingMode && checklistItem.closest('.org-vertical-box[data-is-managed="true"]') || checklistItem.closest('#newOrgBox'))) {
+            if (checklistItem && isEditingMode && checklistItem.closest('.org-vertical-box[data-is-managed="true"]')) {
                 if (checklistItem.classList.contains('state-member')) {
                     checklistItem.classList.remove('state-member');
                     checklistItem.classList.add('state-monitor');
@@ -887,7 +810,7 @@ if ($orgRes) {
         });
 
         document.addEventListener('focus', function(e) {
-            if (e.target.classList.contains('teacher-input') || e.target.id === 'newOrgTeacher') {
+            if (e.target.classList.contains('teacher-input')) {
                 const dropdown = e.target.nextElementSibling;
                 if (dropdown && dropdown.classList.contains('custom-dropdown-list')) {
                     dropdown.style.display = 'block';
@@ -896,7 +819,7 @@ if ($orgRes) {
         }, true);
 
         document.addEventListener('input', function(e) {
-            if (e.target.classList.contains('teacher-input') || e.target.id === 'newOrgTeacher') {
+            if (e.target.classList.contains('teacher-input')) {
                 const term = e.target.value.toLowerCase();
                 const dropdown = e.target.nextElementSibling;
                 if (dropdown && dropdown.classList.contains('custom-dropdown-list')) {
@@ -1038,9 +961,6 @@ if ($orgRes) {
                             wrapper.querySelector('.org-image-preview').src = '';
                             const uploadBtn = box.querySelector('.btn-upload-file');
                             if (uploadBtn) uploadBtn.textContent = 'Choose photo';
-                            if (oid === 'new_org') {
-                                newOrgCroppedBase64 = '';
-                            }
                         } else {
                             alert('Failed to delete photo: ' + data.message);
                         }
@@ -1048,63 +968,6 @@ if ($orgRes) {
                 }
             }
         });
-
-        let newOrgCroppedBase64 = '';
-
-        const saveNewOrgBtn = document.getElementById('saveNewOrgBtn');
-        if (saveNewOrgBtn) {
-            saveNewOrgBtn.addEventListener('click', function() {
-                const oid = document.getElementById('newOrgId').value.trim();
-                const oname = document.getElementById('newOrgName').value.trim();
-                const tid = document.getElementById('newOrgTeacher').value.trim();
-
-                const members = [];
-                const monitors = [];
-                document.querySelectorAll('#newOrgBox .checklist-item').forEach(item => {
-                    const uid = item.getAttribute('data-uid');
-                    if (item.classList.contains('state-monitor')) {
-                        members.push(uid);
-                        monitors.push(uid);
-                    } else if (item.classList.contains('state-member')) {
-                        members.push(uid);
-                    }
-                });
-
-                if (!oid || !oname) {
-                    alert('Please enter both Organisation ID and Name.');
-                    return;
-                }
-
-                const formData = new FormData();
-                formData.append('action', 'create_org');
-                formData.append('oid', oid);
-                formData.append('oname', oname);
-                formData.append('tid', tid);
-                members.forEach(m => formData.append('members[]', m));
-                monitors.forEach(m => formData.append('monitors[]', m));
-
-                fetch('', { method: 'POST', body: formData })
-                .then(res => res.json())
-                .then(data => {
-                    if (data.success) {
-                        if (newOrgCroppedBase64) {
-                            const imgData = new FormData();
-                            imgData.append('action', 'save_image');
-                            imgData.append('oid', oid);
-                            imgData.append('image', newOrgCroppedBase64);
-                            return fetch('', { method: 'POST', body: imgData }).then(() => {
-                                window.location.href = window.location.pathname + '?editing=true&scroll=right';
-                            });
-                        } else {
-                            window.location.href = window.location.pathname + '?editing=true&scroll=right';
-                        }
-                    } else {
-                        alert('Failed to create organisation: ' + data.message);
-                    }
-                })
-                .catch(err => { console.error('Error:', err); });
-            });
-        }
 
         const cropModal = document.getElementById('cropModal');
         const cropViewport = document.getElementById('cropViewport');
@@ -1228,32 +1091,24 @@ if ($orgRes) {
 
             const base64Image = canvas.toDataURL('image/png', 0.9);
             
-            if (oid === 'new_org') {
-                newOrgCroppedBase64 = base64Image;
-                preview.src = base64Image;
-                wrapper.style.display = 'block';
-                activeBox.classList.add('has-image');
-                uploadBtn.textContent = 'Change photo';
-            } else {
-                const formData = new FormData();
-                formData.append('action', 'save_image');
-                formData.append('oid', oid);
-                formData.append('image', base64Image);
+            const formData = new FormData();
+            formData.append('action', 'save_image');
+            formData.append('oid', oid);
+            formData.append('image', base64Image);
 
-                fetch('', { method: 'POST', body: formData })
-                .then(res => res.json())
-                .then(data => {
-                    if (data.success) {
-                        preview.src = data.path + '?t=' + new Date().getTime();
-                        wrapper.style.display = 'block';
-                        activeBox.classList.add('has-image');
-                        uploadBtn.textContent = 'Change photo';
-                    } else {
-                        alert('Error saving image: ' + data.message);
-                    }
-                })
-                .catch(err => { console.error('Upload failed:', err); });
-            }
+            fetch('', { method: 'POST', body: formData })
+            .then(res => res.json())
+            .then(data => {
+                if (data.success) {
+                    preview.src = data.path + '?t=' + new Date().getTime();
+                    wrapper.style.display = 'block';
+                    activeBox.classList.add('has-image');
+                    uploadBtn.textContent = 'Change photo';
+                } else {
+                    alert('Error saving image: ' + data.message);
+                }
+            })
+            .catch(err => { console.error('Upload failed:', err); });
 
             cropModal.classList.remove('active');
             activeBox = null;
