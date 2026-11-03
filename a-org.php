@@ -251,7 +251,7 @@ if ($tRes) {
 }
 
 $studentsList = [];
-$sRes = $conn->query("SELECT uid, name FROM users WHERE role = 'student' ORDER BY CAST(uid AS UNSIGNED) ASC, uid ASC");
+$sRes = $conn->query("SELECT uid, name, class, class_number FROM users WHERE role = 'student' ORDER BY CAST(uid AS UNSIGNED) ASC, uid ASC");
 if ($sRes) {
     $studentsList = $sRes->fetch_all(MYSQLI_ASSOC);
 }
@@ -601,19 +601,20 @@ if ($orgRes) {
                                 <input type="text" class="member-search-input" placeholder="Search student...">
                                 <div class="checklist-items-scroll">
                                     <?php 
-                                    $memberUids = array_column($org['members'], 'uid');
-                                    foreach ($studentsList as $s): 
-                                        $isMem = in_array($s['uid'], $memberUids);
-                                        $isMon = in_array($s['uid'], $org['monitors']);
-                                        $stateClass = '';
-                                        if ($isMon) $stateClass = 'state-monitor';
-                                        else if ($isMem) $stateClass = 'state-member';
-                                    ?>
-                                        <div class="checklist-item <?= $stateClass ?>" data-search="<?= htmlspecialchars(strtolower($s['uid'] . ' ' . $s['name'])) ?>" data-uid="<?= htmlspecialchars($s['uid']) ?>">
-                                            <span class="state-box"></span>
-                                            <span>[<?= htmlspecialchars($s['uid']) ?>] <?= htmlspecialchars($s['name']) ?></span>
-                                        </div>
-                                    <?php endforeach; ?>
+foreach ($studentsList as $s): 
+    // Assuming $org is available (or omit $isMem/$isMon if rendering for the new org box)
+    $sClass = $s['class'] ?? '';
+    $sNum = $s['class_number'] ?? $s['class_no'] ?? '';
+    $sCombined = $sClass . $sNum; // e.g. "1A" + "21" = "1a21"
+    
+    // Combine all searchable attributes into a single lowercase string
+    $searchString = strtolower(trim("{$s['uid']} {$s['name']} {$sClass} {$sNum} {$sCombined}"));
+?>
+    <div class="checklist-item <?= $stateClass ?? '' ?>" data-search="<?= htmlspecialchars($searchString) ?>" data-uid="<?= htmlspecialchars($s['uid']) ?>">
+        <span class="state-box"></span>
+        <span>[<?= htmlspecialchars($s['uid']) ?>] <?= htmlspecialchars($s['name']) ?> <?= $sClass ? "($sClass$sNum)" : "" ?></span>
+    </div>
+<?php endforeach; ?>
                                 </div>
                             </div>
                         </div>
