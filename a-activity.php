@@ -1,7 +1,6 @@
 <?php
 // Database configuration and session parameters loaded FIRST to avoid warnings
 require_once 'db.php';   
-
 session_start();
 
 if (!isset($_SESSION['role']) || strtolower($_SESSION['role']) !== 'admin') {
@@ -14,7 +13,6 @@ if (!isset($_SESSION['uid']) && !isset($_SESSION['user_id'])) {
 }
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
-    // Clear any prior output buffers so HTML/warnings don't corrupt JSON
     while (ob_get_level()) {
         ob_end_clean();
     }
@@ -33,14 +31,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
 
         $stmt = $conn->prepare("UPDATE activity SET oid = ?, aname = ?, date = ?, room = ?, timeslot = ? WHERE aid = ?");
         $stmt->bind_param("sssisi", $oid, $aname, $date, $room, $timeslot, $aid);
-        
         if ($stmt->execute()) {
             echo json_encode(['status' => 'success']);
         } else {
             echo json_encode(['status' => 'error', 'message' => $stmt->error]);
         }
         $stmt->close();
-        
+
         $output = ob_get_clean();
         echo $output;
         exit();
@@ -49,18 +46,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
     if ($action === 'create') {
         $oid = trim($_POST['oid']);
         $aname = trim($_POST['aname']);
-        $date = trim($_POST['date']);
+        $datesInput = trim($_POST['date']);
         $room = intval($_POST['room']);
         $timeslot = trim($_POST['timeslot']);
 
+        // Support multiple comma-separated dates for regular training sessions
+        $dates = array_filter(array_map('trim', explode(',', $datesInput)));
+        if (empty($dates)) {
+            echo json_encode(['status' => 'error', 'message' => 'At least one date is required.']);
+            $output = ob_get_clean();
+            echo $output;
+            exit();
+        }
+
         $conn->begin_transaction();
         try {
+            $createdAids = [];
             $stmt = $conn->prepare("INSERT INTO activity (oid, aname, date, room, timeslot) VALUES (?, ?, ?, ?, ?)");
-            $stmt->bind_param("sssis", $oid, $aname, $date, $room, $timeslot);
-            $stmt->execute();
-            $newAid = $conn->insert_id;
-            $stmt->close();
-
+            
             $memStmt = $conn->prepare("SELECT sid FROM membership WHERE oid = ?");
             $memStmt->bind_param("s", $oid);
             $memStmt->execute();
@@ -68,16 +71,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             $members = $memRes->fetch_all(MYSQLI_ASSOC);
             $memStmt->close();
 
-            // Properly escaped identifier for columns containing a dot
             $attStmt = $conn->prepare("INSERT INTO attendance (aid, sid, attend, rate, `s.rate`) VALUES (?, ?, 0, 10, 10)");
-            foreach ($members as $member) {
-                $attStmt->bind_param("is", $newAid, $member['sid']);
-                $attStmt->execute();
+
+            foreach ($dates as $date) {
+                $stmt->bind_param("sssis", $oid, $aname, $date, $room, $timeslot);
+                $stmt->execute();
+                $newAid = $stmt->insert_id;
+                $createdAids[] = [
+                    'aid' => $newAid,
+                    'date' => $date
+                ];
+
+                foreach ($members as $member) {
+                    $attStmt->bind_param("is", $newAid, $member['sid']);
+                    $attStmt->execute();
+                }
             }
+            $stmt->close();
             $attStmt->close();
 
             $conn->commit();
-            echo json_encode(['status' => 'success', 'aid' => $newAid]);
+            echo json_encode(['status' => 'success', 'aids' => $createdAids]);
         } catch (Exception $e) {
             $conn->rollback();
             echo json_encode(['status' => 'error', 'message' => $e->getMessage()]);
@@ -222,41 +236,16 @@ $events = array_map(function($act) {
 
         .fc-daygrid-day.has-event:hover { outline: 4px double #e99090 !important; outline-offset: -4px; }
 
-        .calendar-active-mode-red .fc-daygrid-day:not(.fc-day-past) { background-color: #fff1f2 !important; }
-        .calendar-active-mode-blue .fc-daygrid-day:not(.fc-day-past) { background-color: #f0fdf4 !important; }
+        /* Modify mode: Red highlighting */
+        .calendar-active-mode-red .fc-daygrid-day.multi-selected:not(.fc-day-past) { background-color: #ea580c !important; }
+        .calendar-active-mode-red .fc-daygrid-day.multi-selected:not(.fc-day-past) .fc-daygrid-day-number { color: #ffffff !important; font-weight: 700; }
 
-        .calendar-active-mode-red .fc-daygrid-day.clicked-0:not(.fc-day-past) { background-color: #ea580c !important; }
-        .calendar-active-mode-red .fc-daygrid-day.clicked-0:not(.fc-day-past) .fc-daygrid-day-number { color: #ffffff !important; font-weight: 700; }
-        .calendar-active-mode-red .fc-daygrid-day.clicked-1:not(.fc-day-past) { background-color: #f2b88e !important; }
-        .calendar-active-mode-red .fc-daygrid-day.clicked-1:not(.fc-day-past) .fc-daygrid-day-number { color: #ffffff !important; font-weight: 600; }
-        .calendar-active-mode-red .fc-daygrid-day.clicked-2:not(.fc-day-past) { background-color: #f7e4b9 !important; }
-        .calendar-active-mode-red .fc-daygrid-day.clicked-2:not(.fc-day-past) .fc-daygrid-day-number { color: #7c2d12 !important; font-weight: 600; }
-        .calendar-active-mode-red .fc-daygrid-day.clicked-3:not(.fc-day-past) { background-color: #fffbe4 !important; }
-        .calendar-active-mode-red .fc-daygrid-day.clicked-3:not(.fc-day-past) .fc-daygrid-day-number { color: #9f1239 !important; font-weight: 500; }
+        /* Create mode: Blue highlighting */
+        .calendar-active-mode-blue .fc-daygrid-day.multi-selected:not(.fc-day-past) { background-color: #0284c7 !important; }
+        .calendar-active-mode-blue .fc-daygrid-day.multi-selected:not(.fc-day-past) .fc-daygrid-day-number { color: #ffffff !important; font-weight: 700; }
 
-        .calendar-active-mode-blue .fc-daygrid-day.clicked-0:not(.fc-day-past) { background-color: #0284c7 !important; }
-        .calendar-active-mode-blue .fc-daygrid-day.clicked-0:not(.fc-day-past) .fc-daygrid-day-number { color: #ffffff !important; font-weight: 700; }
-        .calendar-active-mode-blue .fc-daygrid-day.clicked-1:not(.fc-day-past) { background-color: #38bdf8 !important; }
-        .calendar-active-mode-blue .fc-daygrid-day.clicked-1:not(.fc-day-past) .fc-daygrid-day-number { color: #ffffff !important; font-weight: 600; }
-        .calendar-active-mode-blue .fc-daygrid-day.clicked-2:not(.fc-day-past) { background-color: #6ee7b7 !important; }
-        .calendar-active-mode-blue .fc-daygrid-day.clicked-2:not(.fc-day-past) .fc-daygrid-day-number { color: #064e3b !important; font-weight: 600; }
-        .calendar-active-mode-blue .fc-daygrid-day.clicked-3:not(.fc-day-past) { background-color: #d1fae5 !important; }
-        .calendar-active-mode-blue .fc-daygrid-day.clicked-3:not(.fc-day-past) .fc-daygrid-day-number { color: #065f46 !important; font-weight: 500; }
-
-        .calendar-active-mode-blue .fc-daygrid-day.has-event:not(.fc-day-past),
-        .calendar-active-mode-blue .fc-daygrid-day.has-event[class*="clicked-"]:not(.fc-day-past),
-        .calendar-active-mode-red .fc-daygrid-day.has-event:not(.clicked-0):not(.fc-day-past),
-        .calendar-active-mode-red .fc-daygrid-day.has-event:not(.clicked-0)[class*="clicked-"]:not(.fc-day-past) {
-            background-color: #fecdd3 !important;
+        .fc-daygrid-day.has-event.multi-selected:not(.fc-day-past) {
             z-index: 4 !important;
-        }
-
-        .calendar-active-mode-blue .fc-daygrid-day.has-event:not(.fc-day-past) .fc-daygrid-day-number,
-        .calendar-active-mode-blue .fc-daygrid-day.has-event[class*="clicked-"]:not(.fc-day-past) .fc-daygrid-day-number,
-        .calendar-active-mode-red .fc-daygrid-day.has-event:not(.clicked-0):not(.fc-day-past) .fc-daygrid-day-number,
-        .calendar-active-mode-red .fc-daygrid-day.has-event:not(.clicked-0)[class*="clicked-"]:not(.fc-day-past) .fc-daygrid-day-number {
-            color: #9f1239 !important;
-            font-weight: 700 !important;
         }
 
         .app-body { flex: 1; display: flex; height: calc(100vh - 110px); position: relative; overflow: hidden; }
@@ -362,7 +351,40 @@ $events = array_map(function($act) {
             font-size: 0.95rem; color: #0f172a; outline: none; transition: border-color 0.2s; background-color: #ffffff;
         }
         .field-group input:focus, .field-group select:focus { border-color: #2563eb; box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.15); }
-        .field-group input[readonly] { background-color: #f1f5f9; color: #64748b; cursor: not-allowed; }
+        .field-group input[readonly], .field-group input:disabled, .field-group select:disabled { background-color: #f1f5f9; color: #64748b; cursor: not-allowed; }
+
+        .date-chips-container {
+            max-height: 90px;
+            overflow-y: auto;
+            border: 1px solid #cbd5e1;
+            border-radius: 6px;
+            padding: 6px;
+            background: #f8fafc;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            box-sizing: border-box;
+        }
+        .date-chip {
+            background-color: #e0f2fe;
+            color: #0369a1;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 0.85rem;
+            font-weight: 600;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            border: 1px solid #bae6fd;
+        }
+        .date-chip .remove-date {
+            cursor: pointer;
+            color: #0369a1;
+            font-weight: bold;
+        }
+        .date-chip .remove-date:hover {
+            color: #9f1239;
+        }
 
         .panel-footer { margin-top: auto; padding-top: 1rem; display: flex; flex-direction: column; gap: 0.6rem; }
 
@@ -445,7 +467,7 @@ $events = array_map(function($act) {
                     <span class="tab-separator" id="tabSeparator">|</span>
                     <button type="button" class="tab-btn" id="tabCreate">Create new</button>
                 </div>
-                <button class="close-btn" id="closePanelBtn">&times;</button>
+                <button class="close-btn" id="closePanelBtn">×</button>
             </div>
             
             <div class="panel-body-content">
@@ -454,7 +476,7 @@ $events = array_map(function($act) {
                 </div>
 
                 <div id="activityFormView" style="display: none;">
-                    <button type="button" class="btn-return-back" id="returnBackBtn" style="display: none;">&larr; Back</button>
+                    <button type="button" class="btn-return-back" id="returnBackBtn" style="display: none;">← Back</button>
 
                     <form id="activityForm">
                         <div class="field-group">
@@ -466,7 +488,7 @@ $events = array_map(function($act) {
                             <label for="field_oid">Organisation</label>
                             <select id="field_oid" name="oid">
                                 <option value="">Select Organisation</option>
-                                <?php foreach ($organizations as$org): ?>
+                                <?php foreach ($organizations as $org): ?>
                                     <option value="<?= htmlspecialchars($org['oid']) ?>">
                                         <?= htmlspecialchars($org['oid']) ?>. <?= htmlspecialchars($org['oname']) ?>
                                     </option>
@@ -480,8 +502,13 @@ $events = array_map(function($act) {
                         </div>
 
                         <div class="field-group">
-                            <label for="field_date">Date (date)</label>
-                            <input type="date" id="field_date" name="date">
+                            <label for="field_date">Date(s) (date)</label>
+                            <div class="date-chips-container" id="dateChipsContainer"></div>
+                            <div style="display: flex; gap: 6px; margin-top: 6px;" id="datePickerRow">
+                                <input type="date" id="field_date_picker" style="flex: 1;">
+                                <button type="button" id="addDateBtn" style="padding: 0.4rem 0.75rem; background: #2563eb; color: #fff; border: none; border-radius: 6px; cursor: pointer; font-weight: 600;">Add</button>
+                            </div>
+                            <input type="hidden" id="field_date" name="date">
                         </div>
 
                         <div class="field-group">
@@ -538,6 +565,7 @@ $events = array_map(function($act) {
             var activeEventId = null;
             var currentSelectedDate = null;
             var currentDayActivities = [];
+            var selectedDates = [];
 
             var panel = document.getElementById('activityPanel');
             var tabExisting = document.getElementById('tabExisting');
@@ -551,7 +579,7 @@ $events = array_map(function($act) {
 
             var actionBtn = document.getElementById('actionBtn');
             var deleteBtn = document.getElementById('deleteBtn');
-            var formInputs = document.querySelectorAll('#activityForm input:not([readonly]), #activityForm select');
+            var formInputs = document.querySelectorAll('#activityForm input:not([readonly], [type="hidden"]), #activityForm select');
             var navBtnActivity = document.getElementById('navBtnActivity');
 
             navBtnActivity.addEventListener('click', function(e) {
@@ -570,10 +598,23 @@ $events = array_map(function($act) {
 
             function unselectCalendarDate() {
                 document.querySelectorAll('.fc-daygrid-day').forEach(function(dayEl) {
-                    dayEl.classList.remove('clicked-0', 'clicked-1', 'clicked-2', 'clicked-3');
+                    dayEl.classList.remove('multi-selected');
                 });
-                calendarEl.classList.remove('calendar-active-mode-red', 'calendar-active-mode-blue');
+                calendarEl.classList.remove('calendar-active-mode-blue', 'calendar-active-mode-red');
+                selectedDates = [];
                 currentSelectedDate = null;
+                renderDateChips();
+            }
+
+            function updateSelectionHighlight() {
+                document.querySelectorAll('.fc-daygrid-day').forEach(function(dayEl) {
+                    var dStr = dayEl.getAttribute('data-date');
+                    if (selectedDates.includes(dStr)) {
+                        dayEl.classList.add('multi-selected');
+                    } else {
+                        dayEl.classList.remove('multi-selected');
+                    }
+                });
             }
 
             function getTodayDateStr() {
@@ -596,6 +637,72 @@ $events = array_map(function($act) {
                 });
             }
 
+            function renderDateChips() {
+                var container = document.getElementById('dateChipsContainer');
+                if (!container) return;
+                container.innerHTML = '';
+
+                selectedDates.forEach(function(dStr, index) {
+                    var chip = document.createElement('div');
+                    chip.className = 'date-chip';
+                    chip.textContent = dStr;
+
+                    if (currentMode === 'create') {
+                        var removeBtn = document.createElement('span');
+                        removeBtn.className = 'remove-date';
+                        removeBtn.textContent = '×';
+                        removeBtn.addEventListener('click', function(e) {
+                            e.stopPropagation();
+                            if (index === 0) {
+                                closeRightPanel();
+                            } else {
+                                selectedDates = selectedDates.filter(d => d !== dStr);
+                                if (selectedDates.length === 0) {
+                                    closeRightPanel();
+                                } else {
+                                    renderDateChips();
+                                    updateSelectionHighlight();
+                                    checkFormModifications();
+                                }
+                            }
+                        });
+                        chip.appendChild(removeBtn);
+                    }
+
+                    container.appendChild(chip);
+                });
+
+                document.getElementById('field_date').value = selectedDates.join(', ');
+                checkFormModifications();
+            }
+
+            document.getElementById('addDateBtn').addEventListener('click', function() {
+                var picker = document.getElementById('field_date_picker');
+                var val = picker.value;
+                if (!val) return;
+
+                var todayStr = getTodayDateStr();
+                if (val < todayStr) {
+                    alert('Cannot select past dates.');
+                    return;
+                }
+
+                if (!selectedDates.includes(val)) {
+                    selectedDates.push(val);
+                }
+
+                picker.value = '';
+
+                if (!panel.classList.contains('active') || currentMode !== 'create') {
+                    openActivityPanelForCreate(val);
+                } else {
+                    renderDateChips();
+                    calendarEl.classList.remove('calendar-active-mode-red');
+                    calendarEl.classList.add('calendar-active-mode-blue');
+                    updateSelectionHighlight();
+                }
+            });
+
             var calendar = new FullCalendar.Calendar(calendarEl, {
                 initialView: 'dayGridMonth',
                 displayEventTime: false,
@@ -608,10 +715,10 @@ $events = array_map(function($act) {
                 datesSet: function() {
                     markCellsWithEvents();
                     markPastDays();
+                    updateSelectionHighlight();
                 },
 
                 dateClick: function(info) {
-                    var clickedCell = info.dayEl;
                     var clickedDateStr = info.dateStr;
                     var todayStr = getTodayDateStr();
                     var isPast = clickedDateStr < todayStr;
@@ -620,30 +727,52 @@ $events = array_map(function($act) {
                         return e.startStr.split('T')[0] === clickedDateStr;
                     });
 
-                    if (isPast && currentDayActivities.length === 0) {
-                        return;
-                    }
-
-                    var isAlreadySelected = clickedCell.classList.contains('clicked-0');
-                    unselectCalendarDate();
-
-                    if (isAlreadySelected) {
+                    if (panel.classList.contains('active') && currentSelectedDate === clickedDateStr && currentMode !== 'create' && selectedDates.length === 1) {
                         closeRightPanel();
                         return;
                     }
 
+                    if (panel.classList.contains('active') && currentMode === 'create') {
+                        var idx = selectedDates.indexOf(clickedDateStr);
+                        if (idx > -1) {
+                            if (idx === 0) {
+                                closeRightPanel();
+                                return;
+                            }
+                            selectedDates.splice(idx, 1);
+                        } else {
+                            if (!isPast) {
+                                selectedDates.push(clickedDateStr);
+                            }
+                        }
+
+                        if (selectedDates.length === 0) {
+                            closeRightPanel();
+                            return;
+                        }
+
+                        calendarEl.classList.remove('calendar-active-mode-red');
+                        calendarEl.classList.add('calendar-active-mode-blue');
+                        updateSelectionHighlight();
+                        renderDateChips();
+                        return;
+                    }
+
                     currentSelectedDate = clickedDateStr;
+                    selectedDates = [clickedDateStr]; 
 
                     if (currentDayActivities.length > 0) {
+                        calendarEl.classList.remove('calendar-active-mode-blue');
                         calendarEl.classList.add('calendar-active-mode-red');
+                        updateSelectionHighlight();
+                        renderDateChips();
                         openPanelWithActivityList(currentDayActivities);
-                        if (!isPast) {
-                            applyHeatmapSpread(clickedDateStr);
-                        }
                     } else {
+                        if (isPast) return;
+                        calendarEl.classList.remove('calendar-active-mode-red');
                         calendarEl.classList.add('calendar-active-mode-blue');
+                        updateSelectionHighlight();
                         openActivityPanelForCreate(clickedDateStr);
-                        applyHeatmapSpread(clickedDateStr);
                     }
                 },
 
@@ -652,16 +781,21 @@ $events = array_map(function($act) {
                     var todayStr = getTodayDateStr();
                     var isPast = eventDateStr < todayStr;
 
-                    unselectCalendarDate();
+                    if (panel.classList.contains('active') && currentSelectedDate === eventDateStr && currentMode !== 'create' && selectedDates.length === 1) {
+                        closeRightPanel();
+                        return;
+                    }
+
+                    calendarEl.classList.remove('calendar-active-mode-blue');
+                    calendarEl.classList.add('calendar-active-mode-red');
+                    selectedDates = [eventDateStr];
                     currentSelectedDate = eventDateStr;
+                    updateSelectionHighlight();
+                    renderDateChips();
+
                     currentDayActivities = calendar.getEvents().filter(function(e) {
                         return e.startStr.split('T')[0] === currentSelectedDate;
                     });
-
-                    if (!isPast) {
-                        calendarEl.classList.add('calendar-active-mode-red');
-                        applyHeatmapSpread(currentSelectedDate);
-                    }
                     
                     openPanelWithActivityList(currentDayActivities);
                     var clickedEvt = currentDayActivities.find(e => e.id == info.event.id);
@@ -672,35 +806,6 @@ $events = array_map(function($act) {
             });
 
             calendar.render();
-
-            function applyHeatmapSpread(clickedDateStr) {
-                var baseDate = new Date(clickedDateStr + 'T00:00:00');
-                var baseDayOfWeek = baseDate.getDay();
-
-                for (var rowOffset = -3; rowOffset <= 3; rowOffset++) {
-                    for (var colOffset = -3; colOffset <= 3; colOffset++) {
-                        var targetCol = baseDayOfWeek + colOffset;
-                        if (targetCol < 0 || targetCol > 6) continue;
-
-                        var totalDaysOffset = (rowOffset * 7) + colOffset;
-                        var targetDate = new Date(baseDate);
-                        targetDate.setDate(targetDate.getDate() + totalDaysOffset);
-
-                        var year = targetDate.getFullYear();
-                        var month = String(targetDate.getMonth() + 1).padStart(2, '0');
-                        var day = String(targetDate.getDate()).padStart(2, '0');
-                        var dateStr = year + '-' + month + '-' + day;
-
-                        var targetEl = document.querySelector('.fc-daygrid-day[data-date="' + dateStr + '"]');
-                        if (targetEl && !targetEl.classList.contains('fc-day-past')) {
-                            var distance = Math.max(Math.abs(rowOffset), Math.abs(colOffset));
-                            if (distance <= 3) {
-                                targetEl.classList.add('clicked-' + distance);
-                            }
-                        }
-                    }
-                }
-            }
 
             function markCellsWithEvents() {
                 document.querySelectorAll('.fc-daygrid-day').forEach(function(el) {
@@ -722,6 +827,9 @@ $events = array_map(function($act) {
 
             function openPanelWithActivityList(activitiesList) {
                 resetPanelPosition();
+
+                calendarEl.classList.remove('calendar-active-mode-blue');
+                calendarEl.classList.add('calendar-active-mode-red');
 
                 const todayStr = getTodayDateStr();
                 const isPast = currentSelectedDate < todayStr;
@@ -780,6 +888,9 @@ $events = array_map(function($act) {
                 var props = eventObj.extendedProps;
                 activeEventId = eventObj.id;
 
+                calendarEl.classList.remove('calendar-active-mode-blue');
+                calendarEl.classList.add('calendar-active-mode-red');
+
                 actionBtn.textContent = 'Modify';
                 actionBtn.classList.remove('btn-create-mode');
 
@@ -795,29 +906,35 @@ $events = array_map(function($act) {
                 document.getElementById('field_aid').value = initialActivityData.aid;
                 document.getElementById('field_oid').value = initialActivityData.oid;
                 document.getElementById('field_aname').value = initialActivityData.aname;
-                document.getElementById('field_date').value = initialActivityData.date;
+                selectedDates = [initialActivityData.date];
+                renderDateChips();
+                updateSelectionHighlight();
                 document.getElementById('field_room').value = initialActivityData.room;
                 document.getElementById('field_timeslot').value = initialActivityData.timeslot;
 
                 const todayStr = getTodayDateStr();
                 const isPast = initialActivityData.date < todayStr;
 
+                document.getElementById('datePickerRow').style.display = 'none';
+
+                formInputs.forEach(inp => inp.disabled = false);
+                document.getElementById('field_aid').disabled = true;
                 actionBtn.style.display = 'block';
                 deleteBtn.style.display = isPast ? 'none' : 'block';
                 tabCreate.style.display = isPast ? 'none' : 'inline-block';
                 if (isPast) tabSeparator.style.display = 'none';
-
                 actionBtn.disabled = true;
             }
 
-            function openActivityPanelForCreate(selectedDate) {
-                const todayStr = getTodayDateStr();
-                if (selectedDate < todayStr) return;
-
+            function openActivityPanelForCreate(dateVal) {
                 resetPanelPosition();
 
                 currentMode = 'create';
                 activeEventId = null;
+
+                formInputs.forEach(inp => inp.disabled = false);
+                document.getElementById('field_aid').disabled = true;
+                document.getElementById('datePickerRow').style.display = 'flex';
 
                 tabCreate.style.display = 'inline-block';
                 tabSeparator.style.display = 'inline-block';
@@ -843,7 +960,21 @@ $events = array_map(function($act) {
                 document.getElementById('field_aid').value = '';
                 document.getElementById('field_oid').value = '';
                 document.getElementById('field_aname').value = '';
-                document.getElementById('field_date').value = selectedDate || currentSelectedDate;
+
+                if (dateVal) {
+                    var parsedDates = dateVal.split(',').map(s => s.trim()).filter(Boolean);
+                    parsedDates.forEach(d => {
+                        if (!selectedDates.includes(d)) selectedDates.push(d);
+                    });
+                } else if (selectedDates.length === 0 && currentSelectedDate) {
+                    selectedDates = [currentSelectedDate];
+                }
+
+                calendarEl.classList.remove('calendar-active-mode-red');
+                calendarEl.classList.add('calendar-active-mode-blue');
+                renderDateChips();
+                updateSelectionHighlight();
+
                 document.getElementById('field_room').value = '';
                 document.getElementById('field_timeslot').value = 'Lunch Recess';
 
@@ -856,17 +987,33 @@ $events = array_map(function($act) {
             returnBackBtn.addEventListener('click', function() {
                 activityFormView.style.display = 'none';
                 activitiesListView.style.display = 'block';
+                calendarEl.classList.remove('calendar-active-mode-blue');
+                calendarEl.classList.add('calendar-active-mode-red');
+                if (selectedDates.length > 1) {
+                    selectedDates = [selectedDates[0]];
+                    renderDateChips();
+                    updateSelectionHighlight();
+                }
             });
 
             tabExisting.addEventListener('click', function() {
+                calendarEl.classList.remove('calendar-active-mode-blue');
+                calendarEl.classList.add('calendar-active-mode-red');
+                
+                if (selectedDates.length > 1) {
+                    selectedDates = [currentSelectedDate || selectedDates[0]];
+                }
+                renderDateChips();
+                updateSelectionHighlight();
+
                 if (currentDayActivities.length > 0) {
                     openPanelWithActivityList(currentDayActivities);
                 }
             });
 
             tabCreate.addEventListener('click', function() {
-                if (currentSelectedDate < getTodayDateStr()) return;
-                openActivityPanelForCreate(currentSelectedDate);
+                if (selectedDates.length > 0 && selectedDates[0] < getTodayDateStr()) return;
+                openActivityPanelForCreate(selectedDates.join(', ') || currentSelectedDate);
             });
 
             function closeRightPanel() {
@@ -887,7 +1034,8 @@ $events = array_map(function($act) {
                 if (currentMode === 'create') {
                     var hasContent = document.getElementById('field_aname').value.trim() !== '' &&
                                      document.getElementById('field_oid').value !== '' &&
-                                     document.getElementById('field_room').value.trim() !== '';
+                                     document.getElementById('field_room').value.trim() !== '' &&
+                                     selectedDates.length > 0;
                     actionBtn.disabled = !hasContent;
                 } else {
                     var isModified = 
@@ -910,7 +1058,7 @@ $events = array_map(function($act) {
                 confirmModalBtn.classList.remove('delete-mode');
                 if (currentMode === 'create') {
                     document.getElementById('modalHeading').textContent = 'Confirm Creation';
-                    document.getElementById('modalDescription').textContent = 'Are you sure you want to add this new activity?';
+                    document.getElementById('modalDescription').textContent = 'Are you sure you want to add this new activity to the selected date(s)?';
                 } else {
                     document.getElementById('modalHeading').textContent = 'Confirm Modifications';
                     document.getElementById('modalDescription').textContent = 'Are you sure you want to save changes to this activity?';
@@ -949,7 +1097,11 @@ $events = array_map(function($act) {
                     method: 'POST',
                     body: formData
                 })
-                .then(response => response.json())
+                .then(response => response.text())
+                .then(text => {
+                    console.log("RAW SERVER RESPONSE:", text);
+                    return JSON.parse(text);
+                })
                 .then(data => {
                     if (data.status === 'success') {
                         if (currentMode === 'delete') {
@@ -980,24 +1132,28 @@ $events = array_map(function($act) {
                             actionBtn.disabled = true;
                         } else if (currentMode === 'create') {
                             var anameVal = document.getElementById('field_aname').value;
-                            var dateVal = document.getElementById('field_date').value;
                             var oidVal = document.getElementById('field_oid').value;
                             var roomVal = document.getElementById('field_room').value;
                             var timeslotVal = document.getElementById('field_timeslot').value;
 
-                            calendar.addEvent({
-                                id: data.aid,
-                                title: anameVal,
-                                start: dateVal,
-                                extendedProps: { aid: data.aid, oid: oidVal, aname: anameVal, date: dateVal, room: roomVal, timeslot: timeslotVal }
-                            });
+                            if (data.aids && Array.isArray(data.aids)) {
+                                data.aids.forEach(function(item) {
+                                    calendar.addEvent({
+                                        id: item.aid,
+                                        title: anameVal,
+                                        start: item.date,
+                                        extendedProps: { aid: item.aid, oid: oidVal, aname: anameVal, date: item.date, room: roomVal, timeslot: timeslotVal }
+                                    });
+                                });
+                            }
 
-                            alert('New activity created successfully!');
+                            alert('New activity/activities created successfully!');
                             closeRightPanel();
                         }
 
                         markCellsWithEvents();
                         markPastDays();
+                        updateSelectionHighlight();
                     } else {
                         alert('Error: ' + (data.message || 'Unknown error occurred'));
                     }
