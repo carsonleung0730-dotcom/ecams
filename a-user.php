@@ -30,6 +30,72 @@ try {
 }
 
 // -------------------------------------------------------------------------
+// AUTOMATIC YEARLY GRADE MIGRATION (July 15th check)
+// -------------------------------------------------------------------------
+try {
+    $currentDateKey = date('Y-m-d');
+    $currentYear = date('Y');
+    $targetCheckDate = $currentYear . '-07-15';
+
+    // If today is July 15th or later, check if migration for this year has already run
+    if ($currentDateKey >= $targetCheckDate) {
+        $metaStmt = $pdo->prepare("SELECT setting_value FROM system_meta WHERE setting_key = 'last_grade_promotion_year'");
+        $metaStmt->execute();
+        $lastPromoYear = $metaStmt->fetchColumn();
+
+        if ($lastPromoYear !== $currentYear) {
+            $pdo->beginTransaction();
+
+            // 1. Find and delete all G6 (or grade starting with 6) students and their memberships
+            $g6Stmt = $pdo->query("SELECT uid FROM users WHERE LOWER(role) = 'student' AND (class LIKE '6%' OR class = 'G6')");
+            $g6Students = $g6Stmt->fetchAll(PDO::FETCH_COLUMN);
+
+            if (!empty($g6Students)) {
+                $placeholders = implode(',', array_fill(0, count($g6Students), '?'));
+                
+                $delMem = $pdo->prepare("DELETE FROM membership WHERE sid IN ($placeholders)");
+                $delMem->execute($g6Students);
+
+                $delUsers = $pdo->prepare("DELETE FROM users WHERE uid IN ($placeholders)");
+                $delUsers->execute($g6Students);
+            }
+
+            // 2. Increment class for all remaining students (e.g., 1A -> 2A, 5B -> 6B)
+            $remStmt = $pdo->query("SELECT uid, class FROM users WHERE LOWER(role) = 'student' AND class IS NOT NULL AND class != ''");
+            $studentsToUpgrade = $remStmt->fetchAll();
+
+            $updClassStmt = $pdo->prepare("UPDATE users SET class = :new_class WHERE uid = :uid");
+            foreach ($studentsToUpgrade as $s) {
+                $oldClass = trim($s['class']);
+                // Extract leading digits if possible and increment
+                if (preg_match('/^(\d+)(.*)$/', $oldClass, $matches)) {
+                    $gradeNum = intval($matches[1]) + 1;
+                    $newClass = $gradeNum . $matches[2];
+                    $updClassStmt->execute([':new_class' => $newClass, ':uid' => $s['uid']]);
+                }
+            }
+
+            // 3. Update or insert promotion metadata flag
+            $checkMetaExists = $pdo->prepare("SELECT COUNT(*) FROM system_meta WHERE setting_key = 'last_grade_promotion_year'");
+            $checkMetaExists->execute();
+            if ($checkMetaExists->fetchColumn() > 0) {
+                $pdo->prepare("UPDATE system_meta SET setting_value = ? WHERE setting_key = 'last_grade_promotion_year'")->execute([$currentYear]);
+            } else {
+                // Create system_meta table dynamically if missing
+                $pdo->exec("CREATE TABLE IF NOT EXISTS system_meta (setting_key VARCHAR(50) PRIMARY KEY, setting_value VARCHAR(50))");
+                $pdo->prepare("INSERT INTO system_meta (setting_key, setting_value) VALUES ('last_grade_promotion_year', ?)")->execute([$currentYear]);
+            }
+
+            $pdo->commit();
+        }
+    }
+} catch (Exception $e) {
+    if ($pdo->inTransaction()) {
+        $pdo->rollBack();
+    }
+}
+
+// -------------------------------------------------------------------------
 // 1. BACKEND HANDLERS (AJAX & PDF GENERATION)
 // -------------------------------------------------------------------------
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
@@ -181,7 +247,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     
                     $actLabel = $index . ". " . $act['aname'] . " (" . $act['date'] . ")";
                     $pdfCommands[] = ["font" => "F1", "size" => 10, "x" => 60, "y" => $y, "text" => $actLabel];
-                    $pdfCommands[] = ["font" => "F2", "size" => 10, "x" => 330, "y" => $y, "text" => $status];
+                    // Adjusted X coordinate to 365 to prevent any text overlapping with activity names
+                    $pdfCommands[] = ["font" => "F2", "size" => 10, "x" => 365, "y" => $y, "text" => $status];
                     $y -= 15;
                     $index++;
                 }
@@ -213,7 +280,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         $actLabel = $index . ". " . $act['aname'] . $orgBracket . " (" . $act['date'] . ")";
 
                         $pdfCommands[] = ["font" => "F1", "size" => 10, "x" => 60, "y" => $y, "text" => $actLabel];
-                        $pdfCommands[] = ["font" => "F2", "size" => 10, "x" => 330, "y" => $y, "text" => $status];
+                        // Adjusted X coordinate to 365 for adequate spacing
+                        $pdfCommands[] = ["font" => "F2", "size" => 10, "x" => 365, "y" => $y, "text" => $status];
                         $y -= 15;
                         $index++;
                     }
@@ -252,20 +320,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 foreach ($activities as $act) {
                     if ($y < 50) break;
                     $aid = $act['aid'];
-                    $rate = isset($attendanceMap[$aid]['rate']) ? $attendanceMap[$aid]['rate'] : 'N/A';
-                    if (is_numeric($rate)) {
-                        $partSum += floatval($rate);
+                    $rawRate = isset($attendanceMap[$aid]['rate']) ? $attendanceMap[$aid]['rate'] : 'N/A';
+                    $rateDisplay = is_numeric($rawRate) ? $rawRate . "/10" : $rawRate;
+                    if (is_numeric($rawRate)) {
+                        $partSum += floatval($rawRate);
                         $partCount++;
                     }
 
                     $actLabel = $index . ". " . $act['aname'];
                     $pdfCommands[] = ["font" => "F1", "size" => 10, "x" => 60, "y" => $y, "text" => $actLabel];
-                    $pdfCommands[] = ["font" => "F2", "size" => 10, "x" => 330, "y" => $y, "text" => "Rate: " . $rate];
+                    $pdfCommands[] = ["font" => "F2", "size" => 10, "x" => 365, "y" => $y, "text" => "Rate: " . $rateDisplay];
                     $y -= 15;
                     $index++;
                 }
                 $avgPart = $partCount > 0 ? round($partSum / $partCount, 2) : 0;
-                $pdfCommands[] = ["font" => "F1", "size" => 10, "x" => 60, "y" => $y, "text" => "Average Rating: " . $avgPart];
+                $avgPartDisplay = $avgPart . "/10";
+                $pdfCommands[] = ["font" => "F1", "size" => 10, "x" => 60, "y" => $y, "text" => "Average Rating: " . $avgPartDisplay];
                 $y -= 20;
             }
 
@@ -282,9 +352,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     foreach ($activities as $act) {
                         if ($y < 50) break;
                         $aid = $act['aid'];
-                        $rate = isset($attendanceMap[$aid]['rate']) ? $attendanceMap[$aid]['rate'] : 'N/A';
-                        if (is_numeric($rate)) {
-                            $partSum += floatval($rate);
+                        $rawRate = isset($attendanceMap[$aid]['rate']) ? $attendanceMap[$aid]['rate'] : 'N/A';
+                        $rateDisplay = is_numeric($rawRate) ? $rawRate . "/10" : $rawRate;
+                        if (is_numeric($rawRate)) {
+                            $partSum += floatval($rawRate);
                             $partCount++;
                         }
 
@@ -292,12 +363,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         $actLabel = $index . ". " . $act['aname'] . $orgBracket;
 
                         $pdfCommands[] = ["font" => "F1", "size" => 10, "x" => 60, "y" => $y, "text" => $actLabel];
-                        $pdfCommands[] = ["font" => "F2", "size" => 10, "x" => 330, "y" => $y, "text" => "Rate: " . $rate];
+                        $pdfCommands[] = ["font" => "F2", "size" => 10, "x" => 365, "y" => $y, "text" => "Rate: " . $rateDisplay];
                         $y -= 15;
                         $index++;
                     }
                     $avgPart = $partCount > 0 ? round($partSum / $partCount, 2) : 0;
-                    $pdfCommands[] = ["font" => "F1", "size" => 10, "x" => 60, "y" => $y, "text" => "Average Rating: " . $avgPart];
+                    $avgPartDisplay = $avgPart . "/10";
+                    $pdfCommands[] = ["font" => "F1", "size" => 10, "x" => 60, "y" => $y, "text" => "Average Rating: " . $avgPartDisplay];
                     $y -= 20;
                 }
             }
@@ -331,20 +403,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 foreach ($activities as $act) {
                     if ($y < 50) break;
                     $aid = $act['aid'];
-                    $sRate = isset($attendanceMap[$aid]['s.rate']) ? $attendanceMap[$aid]['s.rate'] : 'N/A';
-                    if (is_numeric($sRate)) {
-                        $satSum += floatval($sRate);
+                    $rawSRate = isset($attendanceMap[$aid]['s.rate']) ? $attendanceMap[$aid]['s.rate'] : 'N/A';
+                    $sRateDisplay = is_numeric($rawSRate) ? $rawSRate . "/10" : $rawSRate;
+                    if (is_numeric($rawSRate)) {
+                        $satSum += floatval($rawSRate);
                         $satCount++;
                     }
 
                     $actLabel = $index . ". " . $act['aname'];
                     $pdfCommands[] = ["font" => "F1", "size" => 10, "x" => 60, "y" => $y, "text" => $actLabel];
-                    $pdfCommands[] = ["font" => "F2", "size" => 10, "x" => 330, "y" => $y, "text" => "Satisfactory Rate: " . $sRate];
+                    $pdfCommands[] = ["font" => "F2", "size" => 10, "x" => 365, "y" => $y, "text" => "Satisfactory Rate: " . $sRateDisplay];
                     $y -= 15;
                     $index++;
                 }
                 $avgSat = $satCount > 0 ? round($satSum / $satCount, 2) : 0;
-                $pdfCommands[] = ["font" => "F1", "size" => 10, "x" => 60, "y" => $y, "text" => "Average Rating: " . $avgSat];
+                $avgSatDisplay = $avgSat . "/10";
+                $pdfCommands[] = ["font" => "F1", "size" => 10, "x" => 60, "y" => $y, "text" => "Average Rating: " . $avgSatDisplay];
                 $y -= 20;
             }
 
@@ -361,9 +435,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     foreach ($activities as $act) {
                         if ($y < 50) break;
                         $aid = $act['aid'];
-                        $sRate = isset($attendanceMap[$aid]['s.rate']) ? $attendanceMap[$aid]['s.rate'] : 'N/A';
-                        if (is_numeric($sRate)) {
-                            $satSum += floatval($sRate);
+                        $rawSRate = isset($attendanceMap[$aid]['s.rate']) ? $attendanceMap[$aid]['s.rate'] : 'N/A';
+                        $sRateDisplay = is_numeric($rawSRate) ? $rawSRate . "/10" : $rawSRate;
+                        if (is_numeric($rawSRate)) {
+                            $satSum += floatval($rawSRate);
                             $satCount++;
                         }
 
@@ -371,12 +446,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         $actLabel = $index . ". " . $act['aname'] . $orgBracket;
 
                         $pdfCommands[] = ["font" => "F1", "size" => 10, "x" => 60, "y" => $y, "text" => $actLabel];
-                        $pdfCommands[] = ["font" => "F2", "size" => 10, "x" => 330, "y" => $y, "text" => "Satisfactory Rate: " . $sRate];
+                        $pdfCommands[] = ["font" => "F2", "size" => 10, "x" => 365, "y" => $y, "text" => "Satisfactory Rate: " . $sRateDisplay];
                         $y -= 15;
                         $index++;
                     }
                     $avgSat = $satCount > 0 ? round($satSum / $satCount, 2) : 0;
-                    $pdfCommands[] = ["font" => "F1", "size" => 10, "x" => 60, "y" => $y, "text" => "Average Rating: " . $avgSat];
+                    $avgSatDisplay = $avgSat . "/10";
+                    $pdfCommands[] = ["font" => "F1", "size" => 10, "x" => 60, "y" => $y, "text" => "Average Rating: " . $avgSatDisplay];
                     $y -= 20;
                 }
             }
@@ -1612,7 +1688,7 @@ try {
                     }
 
                     tooltip.innerHTML = `
-                        <strong>${name}</strong> &nbsp; <strong>Class ${cls}</strong> &nbsp; <strong>CID: ${cid}</strong>
+                        <strong>${name}</strong>   <strong>Class ${cls}</strong>   <strong>CID: ${cid}</strong>
                         <hr style="border:0; border-top:1px solid #cbd5e1; margin:8px 0;">
                         <div style="font-weight:700; margin-bottom:4px; color:#475569;">${orgTitle}:</div>
                         <div style="padding-left:4px;">${orgListHTML}</div>
@@ -1999,7 +2075,6 @@ try {
             for (let i = 0; i < qty; i++) {
                 const rowDiv = document.createElement('div');
                 rowDiv.className = 'add-row-item';
-                // 'monitor' option removed from dropdown list below
                 rowDiv.innerHTML = `
                     <input type="text" placeholder="UID" class="new-uid" required>
                     <input type="text" placeholder="Name" class="new-name" required>
