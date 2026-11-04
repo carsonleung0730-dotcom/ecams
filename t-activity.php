@@ -319,42 +319,20 @@ $events = array_map(function($act) use ($managedOrgIds) {
 
         .fc-daygrid-day.has-event:hover { outline: 4px double #e99090 !important; outline-offset: -4px; }
 
-        .calendar-active-mode-red .fc-daygrid-day:not(.fc-day-past) { background-color: #fff1f2 !important; }
-        .calendar-active-mode-blue .fc-daygrid-day:not(.fc-day-past) { background-color: #f0fdf4 !important; }
+        /* Pure clean selection highlights without heatmap spreading */
+        .calendar-active-mode-blue .fc-daygrid-day.multi-selected:not(.fc-day-past) { background-color: #0284c7 !important; }
+        .calendar-active-mode-blue .fc-daygrid-day.multi-selected:not(.fc-day-past) .fc-daygrid-day-number { color: #ffffff !important; font-weight: 700; }
 
-        .calendar-active-mode-red .fc-daygrid-day.clicked-0:not(.fc-day-past) { background-color: #ea580c !important; }
-        .calendar-active-mode-red .fc-daygrid-day.clicked-0:not(.fc-day-past) .fc-daygrid-day-number { color: #ffffff !important; font-weight: 700; }
-        .calendar-active-mode-red .fc-daygrid-day.clicked-1:not(.fc-day-past) { background-color: #f2b88e !important; }
-        .calendar-active-mode-red .fc-daygrid-day.clicked-1:not(.fc-day-past) .fc-daygrid-day-number { color: #ffffff !important; font-weight: 600; }
-        .calendar-active-mode-red .fc-daygrid-day.clicked-2:not(.fc-day-past) { background-color: #f7e4b9 !important; }
-        .calendar-active-mode-red .fc-daygrid-day.clicked-2:not(.fc-day-past) .fc-daygrid-day-number { color: #7c2d12 !important; font-weight: 600; }
-        .calendar-active-mode-red .fc-daygrid-day.clicked-3:not(.fc-day-past) { background-color: #fffbe4 !important; }
-        .calendar-active-mode-red .fc-daygrid-day.clicked-3:not(.fc-day-past) .fc-daygrid-day-number { color: #9f1239 !important; font-weight: 500; }
-
-        .calendar-active-mode-blue .fc-daygrid-day.clicked-0:not(.fc-day-past),
-        .fc-daygrid-day.multi-selected:not(.fc-day-past) { background-color: #0284c7 !important; }
-        .calendar-active-mode-blue .fc-daygrid-day.clicked-0:not(.fc-day-past) .fc-daygrid-day-number,
-        .fc-daygrid-day.multi-selected:not(.fc-day-past) .fc-daygrid-day-number { color: #ffffff !important; font-weight: 700; }
-        .calendar-active-mode-blue .fc-daygrid-day.clicked-1:not(.fc-day-past) { background-color: #38bdf8 !important; }
-        .calendar-active-mode-blue .fc-daygrid-day.clicked-1:not(.fc-day-past) .fc-daygrid-day-number { color: #ffffff !important; font-weight: 600; }
-        .calendar-active-mode-blue .fc-daygrid-day.clicked-2:not(.fc-day-past) { background-color: #6ee7b7 !important; }
-        .calendar-active-mode-blue .fc-daygrid-day.clicked-2:not(.fc-day-past) .fc-daygrid-day-number { color: #064e3b !important; font-weight: 600; }
-        .calendar-active-mode-blue .fc-daygrid-day.clicked-3:not(.fc-day-past) { background-color: #d1fae5 !important; }
-        .calendar-active-mode-blue .fc-daygrid-day.clicked-3:not(.fc-day-past) .fc-daygrid-day-number { color: #065f46 !important; font-weight: 500; }
-
-        .calendar-active-mode-blue .fc-daygrid-day.has-event:not(.fc-day-past),
-        .calendar-active-mode-blue .fc-daygrid-day.has-event[class*="clicked-"]:not(.fc-day-past),
-        .calendar-active-mode-red .fc-daygrid-day.has-event:not(.clicked-0):not(.fc-day-past),
-        .calendar-active-mode-red .fc-daygrid-day.has-event:not(.clicked-0)[class*="clicked-"]:not(.fc-day-past) {
+        .calendar-active-mode-blue .fc-daygrid-day.has-event:not(.fc-day-past) {
             background-color: #fecdd3 !important;
             z-index: 4 !important;
         }
-
-        .calendar-active-mode-blue .fc-daygrid-day.has-event:not(.fc-day-past) .fc-daygrid-day-number,
-        .calendar-active-mode-blue .fc-daygrid-day.has-event[class*="clicked-"]:not(.fc-day-past) .fc-daygrid-day-number,
-        .calendar-active-mode-red .fc-daygrid-day.has-event:not(.clicked-0):not(.fc-day-past) .fc-daygrid-day-number,
-        .calendar-active-mode-red .fc-daygrid-day.has-event:not(.clicked-0)[class*="clicked-"]:not(.fc-day-past) .fc-daygrid-day-number {
-            color: #9f1239 !important;
+        .calendar-active-mode-blue .fc-daygrid-day.has-event.multi-selected:not(.fc-day-past) {
+            background-color: #0284c7 !important;
+            z-index: 4 !important;
+        }
+        .calendar-active-mode-blue .fc-daygrid-day.has-event.multi-selected:not(.fc-day-past) .fc-daygrid-day-number {
+            color: #ffffff !important;
             font-weight: 700 !important;
         }
 
@@ -708,9 +686,9 @@ $events = array_map(function($act) use ($managedOrgIds) {
 
             function unselectCalendarDate() {
                 document.querySelectorAll('.fc-daygrid-day').forEach(function(dayEl) {
-                    dayEl.classList.remove('clicked-0', 'clicked-1', 'clicked-2', 'clicked-3', 'multi-selected');
+                    dayEl.classList.remove('multi-selected');
                 });
-                calendarEl.classList.remove('calendar-active-mode-red', 'calendar-active-mode-blue');
+                calendarEl.classList.remove('calendar-active-mode-blue');
                 selectedDates = [];
                 currentSelectedDate = null;
                 renderDateChips();
@@ -782,7 +760,7 @@ $events = array_map(function($act) use ($managedOrgIds) {
                 checkFormModifications();
             }
 
-            // Add date via right panel date picker button
+            // Add date via right panel date picker button during creation
             document.getElementById('addDateBtn').addEventListener('click', function() {
                 var picker = document.getElementById('field_date_picker');
                 var val = picker.value;
@@ -833,41 +811,48 @@ $events = array_map(function($act) use ($managedOrgIds) {
                         return e.startStr.split('T')[0] === clickedDateStr;
                     });
 
+                    // Check if panel is already open for this exact date (double click toggle to close)
+                    if (panel.classList.contains('active') && currentSelectedDate === clickedDateStr && currentDayActivities.length > 0 && currentMode === 'modify') {
+                        closeRightPanel();
+                        return;
+                    }
+
+                    currentSelectedDate = clickedDateStr;
+
                     if (currentDayActivities.length > 0) {
                         unselectCalendarDate();
                         selectedDates = [clickedDateStr];
-                        currentSelectedDate = clickedDateStr;
                         renderDateChips();
-                        if (!isPast) {
-                            calendarEl.classList.add('calendar-active-mode-red');
-                            applyHeatmapSpread(clickedDateStr);
-                        }
                         openPanelWithActivityList(currentDayActivities);
                         return;
                     }
 
                     if (isPast) return;
 
-                    // Toggle date selection when clicking calendar cells
-                    var idx = selectedDates.indexOf(clickedDateStr);
-                    if (idx > -1) {
-                        selectedDates.splice(idx, 1);
-                    } else {
-                        selectedDates.push(clickedDateStr);
-                    }
+                    // If we are currently in create mode, allow toggling date selection via calendar clicks
+                    if (panel.classList.contains('active') && currentMode === 'create') {
+                        var idx = selectedDates.indexOf(clickedDateStr);
+                        if (idx > -1) {
+                            selectedDates.splice(idx, 1);
+                        } else {
+                            selectedDates.push(clickedDateStr);
+                        }
 
-                    if (selectedDates.length === 0) {
-                        closeRightPanel();
-                        return;
-                    }
+                        if (selectedDates.length === 0) {
+                            closeRightPanel();
+                            return;
+                        }
 
-                    calendarEl.classList.add('calendar-active-mode-blue');
-                    updateSelectionHighlight();
-
-                    if (!panel.classList.contains('active') || currentMode !== 'create') {
-                        openActivityPanelForCreate();
-                    } else {
+                        calendarEl.classList.add('calendar-active-mode-blue');
+                        updateSelectionHighlight();
                         renderDateChips();
+                    } else {
+                        // Single click empty date opens create panel with that date
+                        unselectCalendarDate();
+                        selectedDates = [clickedDateStr];
+                        calendarEl.classList.add('calendar-active-mode-blue');
+                        updateSelectionHighlight();
+                        openActivityPanelForCreate(clickedDateStr);
                     }
                 },
 
@@ -876,6 +861,11 @@ $events = array_map(function($act) use ($managedOrgIds) {
                     var todayStr = getTodayDateStr();
                     var isPast = eventDateStr < todayStr;
 
+                    if (panel.classList.contains('active') && currentSelectedDate === eventDateStr && currentMode === 'modify') {
+                        closeRightPanel();
+                        return;
+                    }
+
                     unselectCalendarDate();
                     selectedDates = [eventDateStr];
                     currentSelectedDate = eventDateStr;
@@ -883,11 +873,6 @@ $events = array_map(function($act) use ($managedOrgIds) {
                     currentDayActivities = calendar.getEvents().filter(function(e) {
                         return e.startStr.split('T')[0] === currentSelectedDate;
                     });
-
-                    if (!isPast) {
-                        calendarEl.classList.add('calendar-active-mode-red');
-                        applyHeatmapSpread(currentSelectedDate);
-                    }
                     
                     openPanelWithActivityList(currentDayActivities);
                     var clickedEvt = currentDayActivities.find(e => e.id == info.event.id);
@@ -898,35 +883,6 @@ $events = array_map(function($act) use ($managedOrgIds) {
             });
 
             calendar.render();
-
-            function applyHeatmapSpread(clickedDateStr) {
-                var baseDate = new Date(clickedDateStr + 'T00:00:00');
-                var baseDayOfWeek = baseDate.getDay();
-
-                for (var rowOffset = -3; rowOffset <= 3; rowOffset++) {
-                    for (var colOffset = -3; colOffset <= 3; colOffset++) {
-                        var targetCol = baseDayOfWeek + colOffset;
-                        if (targetCol < 0 || targetCol > 6) continue;
-
-                        var totalDaysOffset = (rowOffset * 7) + colOffset;
-                        var targetDate = new Date(baseDate);
-                        targetDate.setDate(targetDate.getDate() + totalDaysOffset);
-
-                        var year = targetDate.getFullYear();
-                        var month = String(targetDate.getMonth() + 1).padStart(2, '0');
-                        var day = String(targetDate.getDate()).padStart(2, '0');
-                        var dateStr = year + '-' + month + '-' + day;
-
-                        var targetEl = document.querySelector('.fc-daygrid-day[data-date="' + dateStr + '"]');
-                        if (targetEl && !targetEl.classList.contains('fc-day-past')) {
-                            var distance = Math.max(Math.abs(rowOffset), Math.abs(colOffset));
-                            if (distance <= 3) {
-                                targetEl.classList.add('clicked-' + distance);
-                            }
-                        }
-                    }
-                }
-            }
 
             function markCellsWithEvents() {
                 document.querySelectorAll('.fc-daygrid-day').forEach(function(el) {
@@ -1096,7 +1052,7 @@ $events = array_map(function($act) use ($managedOrgIds) {
                 tabCreate.style.display = 'inline-block';
                 tabSeparator.style.display = 'inline-block';
 
-                if (currentDayActivities.length === 0 || selectedDates.length > 1) {
+                if (currentDayActivities.length === 0) {
                     tabExisting.style.display = 'none';
                     tabSeparator.style.display = 'none';
                 } else {
@@ -1127,6 +1083,7 @@ $events = array_map(function($act) use ($managedOrgIds) {
                     selectedDates = [currentSelectedDate];
                 }
 
+                calendarEl.classList.add('calendar-active-mode-blue');
                 renderDateChips();
                 updateSelectionHighlight();
 
