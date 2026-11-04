@@ -1226,7 +1226,11 @@ $events = array_map(function($act) use ($managedOrgIds) {
                     method: 'POST',
                     body: formData
                 })
-                .then(response => response.json())
+                .then(response => response.text()) // Change from response.json() to response.text()
+                .then(text => {
+                console.log("RAW SERVER RESPONSE:", text); // Check your F12 Console for this!
+                return JSON.parse(text); // Try parsing manually
+                })
                 .then(data => {
                     if (data.status === 'success') {
                         if (currentMode === 'delete') {
