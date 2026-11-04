@@ -206,10 +206,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $y -= 20;
 
         $sectionCounter = 1;
-        $maxLineLength = 43; // Character limit before wrapping
+        $maxLineLength = 35; // Safe character limit to prevent crossing into the right-hand status column at x=365
+
+        // Helper function to properly escape PDF string literals (prevents parentheses from breaking PDF syntax)
+        $escapePdfString = function($str) {
+            return str_replace(['\\', '(', ')', "\r", "\n"], ['\\\\', '\\(', '\\)', '', ''], $str);
+        };
 
         // Helper function to render wrapped activity details with right-hand side status vertically centered
-        $renderActivityRow = function(&$pdfCommands, &$y, $actLabel, $statusText, $maxLineLength) {
+        $renderActivityRow = function(&$pdfCommands, &$y, $actLabel, $statusText, $maxLineLength, $escapeFunc) {
             $wrappedLines = wordwrap($actLabel, $maxLineLength, "\n", true);
             $lines = explode("\n", $wrappedLines);
             $lineCount = count($lines);
@@ -260,7 +265,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     }
                     
                     $actLabel = $index . ". " . $act['aname'] . " (" . $orgName . ") (" . $act['date'] . ")";
-                    $renderActivityRow($pdfCommands, $y, $actLabel, $status, $maxLineLength);
+                    $renderActivityRow($pdfCommands, $y, $actLabel, $status, $maxLineLength, $escapePdfString);
                     $index++;
                 }
                 $avgAtt = $attTotal > 0 ? round(($attCount / $attTotal) * 100, 1) : 0;
@@ -290,7 +295,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         $orgNameStr = isset($orgMap[$act['oid']]) ? " (" . $orgMap[$act['oid']] . ")" : "";
                         $actLabel = $index . ". " . $act['aname'] . $orgNameStr . " (" . $act['date'] . ")";
 
-                        $renderActivityRow($pdfCommands, $y, $actLabel, $status, $maxLineLength);
+                        $renderActivityRow($pdfCommands, $y, $actLabel, $status, $maxLineLength, $escapePdfString);
                         $index++;
                     }
                     $avgAtt = $attTotal > 0 ? round(($attCount / $attTotal) * 100, 1) : 0;
@@ -336,7 +341,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     }
 
                     $actLabel = $index . ". " . $act['aname'] . " (" . $orgName . ") (" . $act['date'] . ")";
-                    $renderActivityRow($pdfCommands, $y, $actLabel, "Rate: " . $rateDisplay, $maxLineLength);
+                    $renderActivityRow($pdfCommands, $y, $actLabel, "Rate: " . $rateDisplay, $maxLineLength, $escapePdfString);
                     $index++;
                 }
                 $avgPart = $partCount > 0 ? round($partSum / $partCount, 2) : 0;
@@ -368,7 +373,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         $orgNameStr = isset($orgMap[$act['oid']]) ? " (" . $orgMap[$act['oid']] . ")" : "";
                         $actLabel = $index . ". " . $act['aname'] . $orgNameStr . " (" . $act['date'] . ")";
 
-                        $renderActivityRow($pdfCommands, $y, $actLabel, "Rate: " . $rateDisplay, $maxLineLength);
+                        $renderActivityRow($pdfCommands, $y, $actLabel, "Rate: " . $rateDisplay, $maxLineLength, $escapePdfString);
                         $index++;
                     }
                     $avgPart = $partCount > 0 ? round($partSum / $partCount, 2) : 0;
@@ -415,7 +420,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     }
 
                     $actLabel = $index . ". " . $act['aname'] . " (" . $orgName . ") (" . $act['date'] . ")";
-                    $renderActivityRow($pdfCommands, $y, $actLabel, "Satisfactory Rate: " . $sRateDisplay, $maxLineLength);
+                    $renderActivityRow($pdfCommands, $y, $actLabel, "Satisfactory Rate: " . $sRateDisplay, $maxLineLength, $escapePdfString);
                     $index++;
                 }
                 $avgSat = $satCount > 0 ? round($satSum / $satCount, 2) : 0;
@@ -447,7 +452,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         $orgNameStr = isset($orgMap[$act['oid']]) ? " (" . $orgMap[$act['oid']] . ")" : "";
                         $actLabel = $index . ". " . $act['aname'] . $orgNameStr . " (" . $act['date'] . ")";
 
-                        $renderActivityRow($pdfCommands, $y, $actLabel, "Satisfactory Rate: " . $sRateDisplay, $maxLineLength);
+                        $renderActivityRow($pdfCommands, $y, $actLabel, "Satisfactory Rate: " . $sRateDisplay, $maxLineLength, $escapePdfString);
                         $index++;
                     }
                     $avgSat = $satCount > 0 ? round($satSum / $satCount, 2) : 0;
@@ -462,8 +467,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $contentStream .= "0 g 0 G 40 720 32 32 re f\n";
 
         foreach ($pdfCommands as $cmd) {
-            $escapedText = addslashes($cmd['text']);
-            $contentStream .= "BT /{$cmd['font']} {$cmd['size']} Tf {$cmd['x']} {$cmd['y']} Td ({$escapedText}) Tj ET\n";
+            $safeText = $escapePdfString($cmd['text']);
+            $contentStream .= "BT /{$cmd['font']} {$cmd['size']} Tf {$cmd['x']} {$cmd['y']} Td ({$safeText}) Tj ET\n";
         }
 
         $streamLength = strlen($contentStream);
