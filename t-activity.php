@@ -89,9 +89,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
     if ($action === 'create') {
         $oid = intval($_POST['oid']);
         $aname = trim($_POST['aname']);
-        $date = trim($_POST['date']);
+        $datesInput = trim($_POST['date']);
         $room = intval($_POST['room']);
         $timeslot = trim($_POST['timeslot']);
+
+        // Support multiple comma-separated dates for regular training sessions
+        $dates = array_filter(array_map('trim', explode(',', $datesInput)));
+        if (empty($dates)) {
+            echo json_encode(['status' => 'error', 'message' => 'At least one date is required.']);
+            $output = ob_get_clean();
+            echo $output;
+            exit();
+        }
 
         // Bulletproof Database-level Security check: verify ownership directly from DB
         $orgChk = $conn->prepare("SELECT oid FROM organisations WHERE oid = ? AND tid = ?");
@@ -109,12 +118,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
 
         $conn->begin_transaction();
         try {
+            $createdAids = [];
             $stmt = $conn->prepare("INSERT INTO activity (oid, aname, date, room, timeslot) VALUES (?, ?, ?, ?, ?)");
-            $stmt->bind_param("issis", $oid, $aname, $date, $room, $timeslot);
-            $stmt->execute();
-            $newAid = $stmt->insert_id;
-            $stmt->close();
-
+            
             $memStmt = $conn->prepare("SELECT sid FROM membership WHERE oid = ?");
             $memStmt->bind_param("i", $oid);
             $memStmt->execute();
@@ -122,16 +128,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             $members = $memRes->fetch_all(MYSQLI_ASSOC);
             $memStmt->close();
 
-            // Fixed identifier for column named s.rate
             $attStmt = $conn->prepare("INSERT INTO attendance (aid, sid, attend, rate, `s.rate`) VALUES (?, ?, 0, 10, 10)");
-            foreach ($members as $member) {
-                $attStmt->bind_param("is", $newAid, $member['sid']);
-                $attStmt->execute();
+
+            foreach ($dates as $date) {
+                $stmt->bind_param("issis", $oid, $aname, $date, $room, $timeslot);
+                $stmt->execute();
+                $newAid = $stmt->insert_id;
+                $createdAids[] = [
+                    'aid' => $newAid,
+                    'date' => $date
+                ];
+
+                foreach ($members as $member) {
+                    $attStmt->bind_param("is", $newAid, $member['sid']);
+                    $attStmt->execute();
+                }
             }
+            $stmt->close();
             $attStmt->close();
 
             $conn->commit();
-            echo json_encode(['status' => 'success', 'aid' => $newAid]);
+            echo json_encode(['status' => 'success', 'aids' => $createdAids]);
         } catch (Exception $e) {
             $conn->rollback();
             echo json_encode(['status' => 'error', 'message' => $e->getMessage()]);
@@ -314,8 +331,10 @@ $events = array_map(function($act) use ($managedOrgIds) {
         .calendar-active-mode-red .fc-daygrid-day.clicked-3:not(.fc-day-past) { background-color: #fffbe4 !important; }
         .calendar-active-mode-red .fc-daygrid-day.clicked-3:not(.fc-day-past) .fc-daygrid-day-number { color: #9f1239 !important; font-weight: 500; }
 
-        .calendar-active-mode-blue .fc-daygrid-day.clicked-0:not(.fc-day-past) { background-color: #0284c7 !important; }
-        .calendar-active-mode-blue .fc-daygrid-day.clicked-0:not(.fc-day-past) .fc-daygrid-day-number { color: #ffffff !important; font-weight: 700; }
+        .calendar-active-mode-blue .fc-daygrid-day.clicked-0:not(.fc-day-past),
+        .fc-daygrid-day.multi-selected:not(.fc-day-past) { background-color: #0284c7 !important; }
+        .calendar-active-mode-blue .fc-daygrid-day.clicked-0:not(.fc-day-past) .fc-daygrid-day-number,
+        .fc-daygrid-day.multi-selected:not(.fc-day-past) .fc-daygrid-day-number { color: #ffffff !important; font-weight: 700; }
         .calendar-active-mode-blue .fc-daygrid-day.clicked-1:not(.fc-day-past) { background-color: #38bdf8 !important; }
         .calendar-active-mode-blue .fc-daygrid-day.clicked-1:not(.fc-day-past) .fc-daygrid-day-number { color: #ffffff !important; font-weight: 600; }
         .calendar-active-mode-blue .fc-daygrid-day.clicked-2:not(.fc-day-past) { background-color: #6ee7b7 !important; }
@@ -502,7 +521,6 @@ $events = array_map(function($act) use ($managedOrgIds) {
             <a href="t-org.php" class="nav-btn nav-btn-org">
                 <img src="org.png" alt="Organization" class="btn-icon">
             </a>
-            <!-- Updated act.png navigation point to teacher.php -->
             <a href="teacher.php" class="nav-btn nav-btn-activity is-active" id="navBtnActivity">
                 <img src="act.png" alt="Activity" class="btn-icon">
             </a>
@@ -526,7 +544,7 @@ $events = array_map(function($act) use ($managedOrgIds) {
                     <span class="tab-separator" id="tabSeparator">|</span>
                     <button type="button" class="tab-btn" id="tabCreate">Create new</button>
                 </div>
-                <button class="close-btn" id="closePanelBtn">&times;</button>
+                <button class="close-btn" id="closePanelBtn">×</button>
             </div>
             
             <div class="panel-body-content">
@@ -535,7 +553,7 @@ $events = array_map(function($act) use ($managedOrgIds) {
                 </div>
 
                 <div id="activityFormView" style="display: none;">
-                    <button type="button" class="btn-return-back" id="returnBackBtn" style="display: none;">&larr; Back</button>
+                    <button type="button" class="btn-return-back" id="returnBackBtn" style="display: none;">← Back</button>
 
                     <form id="activityForm">
                         <div class="field-group">
@@ -561,8 +579,8 @@ $events = array_map(function($act) use ($managedOrgIds) {
                         </div>
 
                         <div class="field-group">
-                            <label for="field_date">Date (date)</label>
-                            <input type="date" id="field_date" name="date">
+                            <label for="field_date">Date(s) (date)</label>
+                            <input type="text" id="field_date" name="date" placeholder="YYYY-MM-DD or multiple dates">
                         </div>
 
                         <div class="field-group">
@@ -619,6 +637,7 @@ $events = array_map(function($act) use ($managedOrgIds) {
             var activeEventId = null;
             var currentSelectedDate = null;
             var currentDayActivities = [];
+            var selectedDates = [];
 
             var panel = document.getElementById('activityPanel');
             var tabExisting = document.getElementById('tabExisting');
@@ -651,10 +670,22 @@ $events = array_map(function($act) use ($managedOrgIds) {
 
             function unselectCalendarDate() {
                 document.querySelectorAll('.fc-daygrid-day').forEach(function(dayEl) {
-                    dayEl.classList.remove('clicked-0', 'clicked-1', 'clicked-2', 'clicked-3');
+                    dayEl.classList.remove('clicked-0', 'clicked-1', 'clicked-2', 'clicked-3', 'multi-selected');
                 });
                 calendarEl.classList.remove('calendar-active-mode-red', 'calendar-active-mode-blue');
+                selectedDates = [];
                 currentSelectedDate = null;
+            }
+
+            function updateSelectionHighlight() {
+                document.querySelectorAll('.fc-daygrid-day').forEach(function(dayEl) {
+                    var dStr = dayEl.getAttribute('data-date');
+                    if (selectedDates.includes(dStr)) {
+                        dayEl.classList.add('multi-selected');
+                    } else {
+                        dayEl.classList.remove('multi-selected');
+                    }
+                });
             }
 
             function getTodayDateStr() {
@@ -689,6 +720,7 @@ $events = array_map(function($act) use ($managedOrgIds) {
                 datesSet: function() {
                     markCellsWithEvents();
                     markPastDays();
+                    updateSelectionHighlight();
                 },
 
                 dateClick: function(info) {
@@ -701,30 +733,53 @@ $events = array_map(function($act) use ($managedOrgIds) {
                         return e.startStr.split('T')[0] === clickedDateStr;
                     });
 
-                    if (isPast && currentDayActivities.length === 0) {
-                        return;
-                    }
+                    var isCtrlPressed = info.jsEvent.ctrlKey || info.jsEvent.metaKey;
 
-                    var isAlreadySelected = clickedCell.classList.contains('clicked-0');
-                    unselectCalendarDate();
+                    if (isCtrlPressed) {
+                        if (isPast) return; // Disallow selecting past dates for new activities
 
-                    if (isAlreadySelected) {
-                        closeRightPanel();
-                        return;
-                    }
+                        var idx = selectedDates.indexOf(clickedDateStr);
+                        if (idx > -1) {
+                            selectedDates.splice(idx, 1);
+                        } else {
+                            selectedDates.push(clickedDateStr);
+                        }
 
-                    currentSelectedDate = clickedDateStr;
+                        if (selectedDates.length === 0) {
+                            closeRightPanel();
+                            return;
+                        }
 
-                    if (currentDayActivities.length > 0) {
-                        calendarEl.classList.add('calendar-active-mode-red');
-                        openPanelWithActivityList(currentDayActivities);
-                        if (!isPast) {
+                        calendarEl.classList.add('calendar-active-mode-blue');
+                        updateSelectionHighlight();
+                        openActivityPanelForCreate(selectedDates.join(', '));
+                    } else {
+                        if (isPast && currentDayActivities.length === 0) {
+                            return;
+                        }
+
+                        var isAlreadySelected = selectedDates.length === 1 && selectedDates[0] === clickedDateStr;
+                        unselectCalendarDate();
+
+                        if (isAlreadySelected) {
+                            closeRightPanel();
+                            return;
+                        }
+
+                        selectedDates = [clickedDateStr];
+                        currentSelectedDate = clickedDateStr;
+
+                        if (currentDayActivities.length > 0) {
+                            calendarEl.classList.add('calendar-active-mode-red');
+                            openPanelWithActivityList(currentDayActivities);
+                            if (!isPast) {
+                                applyHeatmapSpread(clickedDateStr);
+                            }
+                        } else {
+                            calendarEl.classList.add('calendar-active-mode-blue');
+                            openActivityPanelForCreate(clickedDateStr);
                             applyHeatmapSpread(clickedDateStr);
                         }
-                    } else {
-                        calendarEl.classList.add('calendar-active-mode-blue');
-                        openActivityPanelForCreate(clickedDateStr);
-                        applyHeatmapSpread(clickedDateStr);
                     }
                 },
 
@@ -734,6 +789,7 @@ $events = array_map(function($act) use ($managedOrgIds) {
                     var isPast = eventDateStr < todayStr;
 
                     unselectCalendarDate();
+                    selectedDates = [eventDateStr];
                     currentSelectedDate = eventDateStr;
                     currentDayActivities = calendar.getEvents().filter(function(e) {
                         return e.startStr.split('T')[0] === currentSelectedDate;
@@ -880,6 +936,13 @@ $events = array_map(function($act) use ($managedOrgIds) {
                 document.getElementById('field_aid').value = initialActivityData.aid;
                 
                 var oidSelect = document.getElementById('field_oid');
+                // Clean up any previously appended dynamic options
+                Array.from(oidSelect.options).forEach(function(opt) {
+                    if (opt.getAttribute('data-dynamic') === 'true') {
+                        opt.remove();
+                    }
+                });
+
                 if (!isManaged && initialActivityData.oid) {
                     let exists = false;
                     for (let i = 0; i < oidSelect.options.length; i++) {
@@ -892,6 +955,7 @@ $events = array_map(function($act) use ($managedOrgIds) {
                         let opt = document.createElement('option');
                         opt.value = initialActivityData.oid;
                         opt.textContent = initialActivityData.oid + '. ' + initialActivityData.oname;
+                        opt.setAttribute('data-dynamic', 'true');
                         oidSelect.appendChild(opt);
                     }
                 }
@@ -921,10 +985,7 @@ $events = array_map(function($act) use ($managedOrgIds) {
                 }
             }
 
-            function openActivityPanelForCreate(selectedDate) {
-                const todayStr = getTodayDateStr();
-                if (selectedDate < todayStr) return;
-
+            function openActivityPanelForCreate(dateVal) {
                 resetPanelPosition();
 
                 currentMode = 'create';
@@ -933,10 +994,18 @@ $events = array_map(function($act) use ($managedOrgIds) {
                 formInputs.forEach(inp => inp.disabled = false);
                 document.getElementById('field_aid').disabled = true;
 
+                // Clean up any dynamic non-managed organization options from previous view
+                var oidSelect = document.getElementById('field_oid');
+                Array.from(oidSelect.options).forEach(function(opt) {
+                    if (opt.getAttribute('data-dynamic') === 'true') {
+                        opt.remove();
+                    }
+                });
+
                 tabCreate.style.display = 'inline-block';
                 tabSeparator.style.display = 'inline-block';
 
-                if (currentDayActivities.length === 0) {
+                if (currentDayActivities.length === 0 || selectedDates.length > 1) {
                     tabExisting.style.display = 'none';
                     tabSeparator.style.display = 'none';
                 } else {
@@ -957,7 +1026,7 @@ $events = array_map(function($act) use ($managedOrgIds) {
                 document.getElementById('field_aid').value = '';
                 document.getElementById('field_oid').value = '';
                 document.getElementById('field_aname').value = '';
-                document.getElementById('field_date').value = selectedDate || currentSelectedDate;
+                document.getElementById('field_date').value = dateVal || selectedDates.join(', ') || currentSelectedDate;
                 document.getElementById('field_room').value = '';
                 document.getElementById('field_timeslot').value = 'Lunch Recess';
 
@@ -979,8 +1048,8 @@ $events = array_map(function($act) use ($managedOrgIds) {
             });
 
             tabCreate.addEventListener('click', function() {
-                if (currentSelectedDate < getTodayDateStr()) return;
-                openActivityPanelForCreate(currentSelectedDate);
+                if (selectedDates.length > 0 && selectedDates[0] < getTodayDateStr()) return;
+                openActivityPanelForCreate(selectedDates.join(', ') || currentSelectedDate);
             });
 
             function closeRightPanel() {
@@ -1024,7 +1093,7 @@ $events = array_map(function($act) use ($managedOrgIds) {
                 confirmModalBtn.classList.remove('delete-mode');
                 if (currentMode === 'create') {
                     document.getElementById('modalHeading').textContent = 'Confirm Creation';
-                    document.getElementById('modalDescription').textContent = 'Are you sure you want to add this new activity?';
+                    document.getElementById('modalDescription').textContent = 'Are you sure you want to add this new activity to the selected date(s)?';
                 } else {
                     document.getElementById('modalHeading').textContent = 'Confirm Modifications';
                     document.getElementById('modalDescription').textContent = 'Are you sure you want to save changes to this activity?';
@@ -1059,7 +1128,7 @@ $events = array_map(function($act) use ($managedOrgIds) {
                     formData.append('timeslot', document.getElementById('field_timeslot').value);
                 }
 
-                fetch('t-activity.php', {
+                fetch('teacher.php', {
                     method: 'POST',
                     body: formData
                 })
@@ -1099,7 +1168,6 @@ $events = array_map(function($act) use ($managedOrgIds) {
                             actionBtn.disabled = true;
                         } else if (currentMode === 'create') {
                             var anameVal = document.getElementById('field_aname').value;
-                            var dateVal = document.getElementById('field_date').value;
                             var oidVal = document.getElementById('field_oid').value;
                             var roomVal = document.getElementById('field_room').value;
                             var timeslotVal = document.getElementById('field_timeslot').value;
@@ -1108,19 +1176,24 @@ $events = array_map(function($act) use ($managedOrgIds) {
                             var selectedOrgText = oidSelect.options[oidSelect.selectedIndex] ? oidSelect.options[oidSelect.selectedIndex].text : '';
                             var onameVal = selectedOrgText.includes('.') ? selectedOrgText.split('.')[1].trim() : selectedOrgText;
 
-                            calendar.addEvent({
-                                id: data.aid,
-                                title: anameVal,
-                                start: dateVal,
-                                extendedProps: { aid: data.aid, oid: oidVal, oname: onameVal, aname: anameVal, date: dateVal, room: roomVal, timeslot: timeslotVal, isManaged: true }
-                            });
+                            if (data.aids && Array.isArray(data.aids)) {
+                                data.aids.forEach(function(item) {
+                                    calendar.addEvent({
+                                        id: item.aid,
+                                        title: anameVal,
+                                        start: item.date,
+                                        extendedProps: { aid: item.aid, oid: oidVal, oname: onameVal, aname: anameVal, date: item.date, room: roomVal, timeslot: timeslotVal, isManaged: true }
+                                    });
+                                });
+                            }
 
-                            alert('New activity created successfully!');
+                            alert('New activity/activities created successfully!');
                             closeRightPanel();
                         }
 
                         markCellsWithEvents();
                         markPastDays();
+                        updateSelectionHighlight();
                     } else {
                         alert('Error: ' + (data.message || 'Unknown error occurred'));
                     }
