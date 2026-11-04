@@ -327,9 +327,6 @@ $events = array_map(function($act) use ($managedOrgIds) {
         .calendar-active-mode-blue .fc-daygrid-day.multi-selected:not(.fc-day-past) { background-color: #0284c7 !important; }
         .calendar-active-mode-blue .fc-daygrid-day.multi-selected:not(.fc-day-past) .fc-daygrid-day-number { color: #ffffff !important; font-weight: 700; }
 
-        .fc-daygrid-day.has-event:not(.multi-selected):not(.fc-day-past) {
-            background-color: #fecdd3 !important;
-        }
         .fc-daygrid-day.has-event.multi-selected:not(.fc-day-past) {
             z-index: 4 !important;
         }
@@ -810,13 +807,11 @@ $events = array_map(function($act) use ($managedOrgIds) {
                         return e.startStr.split('T')[0] === clickedDateStr;
                     });
 
-                    // 1. Double click / tap toggle: if clicking the exact same active selection, close panel
-                    if (panel.classList.contains('active') && currentSelectedDate === clickedDateStr) {
+                    // 1. Same date double click / toggle close when panel is active
+                    if (panel.classList.contains('active') && currentSelectedDate === clickedDateStr && currentMode !== 'create') {
                         closeRightPanel();
                         return;
                     }
-
-                    currentSelectedDate = clickedDateStr;
 
                     // 2. If in Create New mode, clicking any date toggles it blue and adds/removes it from date chips
                     if (panel.classList.contains('active') && currentMode === 'create') {
@@ -824,7 +819,9 @@ $events = array_map(function($act) use ($managedOrgIds) {
                         if (idx > -1) {
                             selectedDates.splice(idx, 1);
                         } else {
-                            selectedDates.push(clickedDateStr);
+                            if (!isPast) {
+                                selectedDates.push(clickedDateStr);
+                            }
                         }
 
                         if (selectedDates.length === 0) {
@@ -839,7 +836,9 @@ $events = array_map(function($act) use ($managedOrgIds) {
                         return;
                     }
 
-                    // 3. If date has activities and we are not in create mode -> open modify mode (Red)
+                    // 3. Not in create mode: clicking another date switches directly to that date
+                    currentSelectedDate = clickedDateStr;
+
                     if (currentDayActivities.length > 0) {
                         calendarEl.classList.remove('calendar-active-mode-blue');
                         calendarEl.classList.add('calendar-active-mode-red');
@@ -847,17 +846,14 @@ $events = array_map(function($act) use ($managedOrgIds) {
                         updateSelectionHighlight();
                         renderDateChips();
                         openPanelWithActivityList(currentDayActivities);
-                        return;
+                    } else {
+                        if (isPast) return;
+                        calendarEl.classList.remove('calendar-active-mode-red');
+                        calendarEl.classList.add('calendar-active-mode-blue');
+                        selectedDates = [clickedDateStr];
+                        updateSelectionHighlight();
+                        openActivityPanelForCreate(clickedDateStr);
                     }
-
-                    if (isPast) return;
-
-                    // 4. Normal empty date click -> open Create New panel (Blue)
-                    calendarEl.classList.remove('calendar-active-mode-red');
-                    calendarEl.classList.add('calendar-active-mode-blue');
-                    selectedDates = [clickedDateStr];
-                    updateSelectionHighlight();
-                    openActivityPanelForCreate(clickedDateStr);
                 },
 
                 eventClick: function(info) {
@@ -865,7 +861,7 @@ $events = array_map(function($act) use ($managedOrgIds) {
                     var todayStr = getTodayDateStr();
                     var isPast = eventDateStr < todayStr;
 
-                    if (panel.classList.contains('active') && currentSelectedDate === eventDateStr) {
+                    if (panel.classList.contains('active') && currentSelectedDate === eventDateStr && currentMode !== 'create') {
                         closeRightPanel();
                         return;
                     }
