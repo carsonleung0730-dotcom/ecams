@@ -213,6 +213,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $y -= 20;
 
         $sectionCounter = 1;
+        $maxLineLength = 45; // Max character limit before wrapping to a new line
 
         if ($att) {
             $pdfCommands[] = ["font" => "F1", "size" => 12, "x" => 40, "y" => $y, "text" => $toRoman($sectionCounter) . ". Attendance Record:"];
@@ -246,10 +247,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     }
                     
                     $actLabel = $index . ". " . $act['aname'] . " (" . $act['date'] . ")";
-                    $pdfCommands[] = ["font" => "F1", "size" => 10, "x" => 60, "y" => $y, "text" => $actLabel];
-                    // Adjusted X coordinate to 365 to prevent any text overlapping with activity names
-                    $pdfCommands[] = ["font" => "F2", "size" => 10, "x" => 365, "y" => $y, "text" => $status];
-                    $y -= 15;
+                    
+                    if (strlen($actLabel) > $maxLineLength) {
+                        $wrappedLines = wordwrap($actLabel, $maxLineLength, "\n", true);
+                        $lines = explode("\n", $wrappedLines);
+                        foreach ($lines as $line) {
+                            $pdfCommands[] = ["font" => "F1", "size" => 10, "x" => 60, "y" => $y, "text" => $line];
+                            $y -= 12;
+                        }
+                        $pdfCommands[] = ["font" => "F2", "size" => 10, "x" => 80, "y" => $y, "text" => $status];
+                        $y -= 18;
+                    } else {
+                        $pdfCommands[] = ["font" => "F1", "size" => 10, "x" => 60, "y" => $y, "text" => $actLabel];
+                        $pdfCommands[] = ["font" => "F2", "size" => 10, "x" => 365, "y" => $y, "text" => $status];
+                        $y -= 15;
+                    }
                     $index++;
                 }
                 $avgAtt = $attTotal > 0 ? round(($attCount / $attTotal) * 100, 1) : 0;
@@ -279,10 +291,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         $orgBracket = isset($orgMap[$act['oid']]) ? " (" . $orgMap[$act['oid']] . ")" : "";
                         $actLabel = $index . ". " . $act['aname'] . $orgBracket . " (" . $act['date'] . ")";
 
-                        $pdfCommands[] = ["font" => "F1", "size" => 10, "x" => 60, "y" => $y, "text" => $actLabel];
-                        // Adjusted X coordinate to 365 for adequate spacing
-                        $pdfCommands[] = ["font" => "F2", "size" => 10, "x" => 365, "y" => $y, "text" => $status];
-                        $y -= 15;
+                        if (strlen($actLabel) > $maxLineLength) {
+                            $wrappedLines = wordwrap($actLabel, $maxLineLength, "\n", true);
+                            $lines = explode("\n", $wrappedLines);
+                            foreach ($lines as $line) {
+                                $pdfCommands[] = ["font" => "F1", "size" => 10, "x" => 60, "y" => $y, "text" => $line];
+                                $y -= 12;
+                            }
+                            $pdfCommands[] = ["font" => "F2", "size" => 10, "x" => 80, "y" => $y, "text" => $status];
+                            $y -= 18;
+                        } else {
+                            $pdfCommands[] = ["font" => "F1", "size" => 10, "x" => 60, "y" => $y, "text" => $actLabel];
+                            $pdfCommands[] = ["font" => "F2", "size" => 10, "x" => 365, "y" => $y, "text" => $status];
+                            $y -= 15;
+                        }
                         $index++;
                     }
                     $avgAtt = $attTotal > 0 ? round(($attCount / $attTotal) * 100, 1) : 0;
@@ -327,10 +349,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         $partCount++;
                     }
 
-                    $actLabel = $index . ". " . $act['aname'];
-                    $pdfCommands[] = ["font" => "F1", "size" => 10, "x" => 60, "y" => $y, "text" => $actLabel];
-                    $pdfCommands[] = ["font" => "F2", "size" => 10, "x" => 365, "y" => $y, "text" => "Rate: " . $rateDisplay];
-                    $y -= 15;
+                    $actLabel = $index . ". " . $act['aname'] . " (" . $act['date'] . ")";
+
+                    if (strlen($actLabel) > $maxLineLength) {
+                        $wrappedLines = wordwrap($actLabel, $maxLineLength, "\n", true);
+                        $lines = explode("\n", $wrappedLines);
+                        foreach ($lines as $line) {
+                            $pdfCommands[] = ["font" => "F1", "size" => 10, "x" => 60, "y" => $y, "text" => $line];
+                            $y -= 12;
+                        }
+                        $pdfCommands[] = ["font" => "F2", "size" => 10, "x" => 80, "y" => $y, "text" => "Rate: " . $rateDisplay];
+                        $y -= 18;
+                    } else {
+                        $pdfCommands[] = ["font" => "F1", "size" => 10, "x" => 60, "y" => $y, "text" => $actLabel];
+                        $pdfCommands[] = ["font" => "F2", "size" => 10, "x" => 365, "y" => $y, "text" => "Rate: " . $rateDisplay];
+                        $y -= 15;
+                    }
                     $index++;
                 }
                 $avgPart = $partCount > 0 ? round($partSum / $partCount, 2) : 0;
@@ -360,11 +394,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         }
 
                         $orgBracket = isset($orgMap[$act['oid']]) ? " (" . $orgMap[$act['oid']] . ")" : "";
-                        $actLabel = $index . ". " . $act['aname'] . $orgBracket;
+                        $actLabel = $index . ". " . $act['aname'] . $orgBracket . " (" . $act['date'] . ")";
 
-                        $pdfCommands[] = ["font" => "F1", "size" => 10, "x" => 60, "y" => $y, "text" => $actLabel];
-                        $pdfCommands[] = ["font" => "F2", "size" => 10, "x" => 365, "y" => $y, "text" => "Rate: " . $rateDisplay];
-                        $y -= 15;
+                        if (strlen($actLabel) > $maxLineLength) {
+                            $wrappedLines = wordwrap($actLabel, $maxLineLength, "\n", true);
+                            $lines = explode("\n", $wrappedLines);
+                            foreach ($lines as $line) {
+                                $pdfCommands[] = ["font" => "F1", "size" => 10, "x" => 60, "y" => $y, "text" => $line];
+                                $y -= 12;
+                            }
+                            $pdfCommands[] = ["font" => "F2", "size" => 10, "x" => 80, "y" => $y, "text" => "Rate: " . $rateDisplay];
+                            $y -= 18;
+                        } else {
+                            $pdfCommands[] = ["font" => "F1", "size" => 10, "x" => 60, "y" => $y, "text" => $actLabel];
+                            $pdfCommands[] = ["font" => "F2", "size" => 10, "x" => 365, "y" => $y, "text" => "Rate: " . $rateDisplay];
+                            $y -= 15;
+                        }
                         $index++;
                     }
                     $avgPart = $partCount > 0 ? round($partSum / $partCount, 2) : 0;
@@ -410,10 +455,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         $satCount++;
                     }
 
-                    $actLabel = $index . ". " . $act['aname'];
-                    $pdfCommands[] = ["font" => "F1", "size" => 10, "x" => 60, "y" => $y, "text" => $actLabel];
-                    $pdfCommands[] = ["font" => "F2", "size" => 10, "x" => 365, "y" => $y, "text" => "Satisfactory Rate: " . $sRateDisplay];
-                    $y -= 15;
+                    $actLabel = $index . ". " . $act['aname'] . " (" . $act['date'] . ")";
+
+                    if (strlen($actLabel) > $maxLineLength) {
+                        $wrappedLines = wordwrap($actLabel, $maxLineLength, "\n", true);
+                        $lines = explode("\n", $wrappedLines);
+                        foreach ($lines as $line) {
+                            $pdfCommands[] = ["font" => "F1", "size" => 10, "x" => 60, "y" => $y, "text" => $line];
+                            $y -= 12;
+                        }
+                        $pdfCommands[] = ["font" => "F2", "size" => 10, "x" => 80, "y" => $y, "text" => "Satisfactory Rate: " . $sRateDisplay];
+                        $y -= 18;
+                    } else {
+                        $pdfCommands[] = ["font" => "F1", "size" => 10, "x" => 60, "y" => $y, "text" => $actLabel];
+                        $pdfCommands[] = ["font" => "F2", "size" => 10, "x" => 365, "y" => $y, "text" => "Satisfactory Rate: " . $sRateDisplay];
+                        $y -= 15;
+                    }
                     $index++;
                 }
                 $avgSat = $satCount > 0 ? round($satSum / $satCount, 2) : 0;
@@ -443,11 +500,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         }
 
                         $orgBracket = isset($orgMap[$act['oid']]) ? " (" . $orgMap[$act['oid']] . ")" : "";
-                        $actLabel = $index . ". " . $act['aname'] . $orgBracket;
+                        $actLabel = $index . ". " . $act['aname'] . $orgBracket . " (" . $act['date'] . ")";
 
-                        $pdfCommands[] = ["font" => "F1", "size" => 10, "x" => 60, "y" => $y, "text" => $actLabel];
-                        $pdfCommands[] = ["font" => "F2", "size" => 10, "x" => 365, "y" => $y, "text" => "Satisfactory Rate: " . $sRateDisplay];
-                        $y -= 15;
+                        if (strlen($actLabel) > $maxLineLength) {
+                            $wrappedLines = wordwrap($actLabel, $maxLineLength, "\n", true);
+                            $lines = explode("\n", $wrappedLines);
+                            foreach ($lines as $line) {
+                                $pdfCommands[] = ["font" => "F1", "size" => 10, "x" => 60, "y" => $y, "text" => $line];
+                                $y -= 12;
+                            }
+                            $pdfCommands[] = ["font" => "F2", "size" => 10, "x" => 80, "y" => $y, "text" => "Satisfactory Rate: " . $sRateDisplay];
+                            $y -= 18;
+                        } else {
+                            $pdfCommands[] = ["font" => "F1", "size" => 10, "x" => 60, "y" => $y, "text" => $actLabel];
+                            $pdfCommands[] = ["font" => "F2", "size" => 10, "x" => 365, "y" => $y, "text" => "Satisfactory Rate: " . $sRateDisplay];
+                            $y -= 15;
+                        }
                         $index++;
                     }
                     $avgSat = $satCount > 0 ? round($satSum / $satCount, 2) : 0;
