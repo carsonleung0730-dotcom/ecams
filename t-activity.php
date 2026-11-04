@@ -1015,7 +1015,9 @@ $events = array_map(function($act) use ($managedOrgIds) {
 
                 formInputs.forEach(inp => inp.disabled = false);
                 document.getElementById('field_aid').disabled = true;
-                document.getElementById('field_date').readOnly = true; // ensure date field is view-only
+                
+                var dateInput = document.getElementById('field_date');
+                dateInput.readOnly = true; // ensure date field is view-only
 
                 var oidSelect = document.getElementById('field_oid');
                 Array.from(oidSelect.options).forEach(function(opt) {
@@ -1048,7 +1050,10 @@ $events = array_map(function($act) use ($managedOrgIds) {
                 document.getElementById('field_aid').value = '';
                 document.getElementById('field_oid').value = '';
                 document.getElementById('field_aname').value = '';
-                document.getElementById('field_date').value = dateVal || selectedDates.join(', ') || currentSelectedDate;
+                
+                // Explicitly populate date field with comma-separated dates
+                dateInput.value = dateVal || selectedDates.join(', ') || currentSelectedDate || '';
+
                 document.getElementById('field_room').value = '';
                 document.getElementById('field_timeslot').value = 'Lunch Recess';
 
