@@ -824,6 +824,7 @@ $events = array_map(function($act) use ($managedOrgIds) {
                             }
                         }
 
+                        // If user deselects all dates or the original/primary date, close panel entirely
                         if (selectedDates.length === 0) {
                             closeRightPanel();
                             return;
@@ -908,6 +909,10 @@ $events = array_map(function($act) use ($managedOrgIds) {
             function openPanelWithActivityList(activitiesList) {
                 resetPanelPosition();
 
+                // Switch calendar highlighting explicitly back to red when viewing existing activities
+                calendarEl.classList.remove('calendar-active-mode-blue');
+                calendarEl.classList.add('calendar-active-mode-red');
+
                 const todayStr = getTodayDateStr();
                 const isPast = currentSelectedDate < todayStr;
 
@@ -967,6 +972,10 @@ $events = array_map(function($act) use ($managedOrgIds) {
                 var props = eventObj.extendedProps;
                 activeEventId = eventObj.id;
                 var isManaged = props.isManaged;
+
+                // Ensure modify mode keeps the calendar highlighted in red
+                calendarEl.classList.remove('calendar-active-mode-blue');
+                calendarEl.classList.add('calendar-active-mode-red');
 
                 actionBtn.textContent = 'Modify';
                 actionBtn.classList.remove('btn-create-mode');
@@ -1103,7 +1112,7 @@ $events = array_map(function($act) use ($managedOrgIds) {
             returnBackBtn.addEventListener('click', function() {
                 activityFormView.style.display = 'none';
                 activitiesListView.style.display = 'block';
-                // Switch styling back to red when returning from create back to existing activity list
+                // Switch styling back to red when returning from form back to existing activity list
                 calendarEl.classList.remove('calendar-active-mode-blue');
                 calendarEl.classList.add('calendar-active-mode-red');
             });
