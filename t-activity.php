@@ -463,6 +463,39 @@ $events = array_map(function($act) use ($managedOrgIds) {
         .field-group input:focus, .field-group select:focus { border-color: #2563eb; box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.15); }
         .field-group input[readonly], .field-group input:disabled, .field-group select:disabled { background-color: #f1f5f9; color: #64748b; cursor: not-allowed; }
 
+        .date-chips-container {
+            max-height: 90px;
+            overflow-y: auto;
+            border: 1px solid #cbd5e1;
+            border-radius: 6px;
+            padding: 6px;
+            background: #f8fafc;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            box-sizing: border-box;
+        }
+        .date-chip {
+            background-color: #e0f2fe;
+            color: #0369a1;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 0.85rem;
+            font-weight: 600;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            border: 1px solid #bae6fd;
+        }
+        .date-chip .remove-date {
+            cursor: pointer;
+            color: #0369a1;
+            font-weight: bold;
+        }
+        .date-chip .remove-date:hover {
+            color: #9f1239;
+        }
+
         .panel-footer { margin-top: auto; padding-top: 1rem; display: flex; flex-direction: column; gap: 0.6rem; }
 
         .btn-action {
@@ -580,8 +613,12 @@ $events = array_map(function($act) use ($managedOrgIds) {
 
                         <div class="field-group">
                             <label for="field_date">Date(s) (date)</label>
-                            <!-- Date field made readonly so users select dates via calendar -->
-                            <input type="text" id="field_date" name="date" placeholder="Select from calendar" readonly>
+                            <div class="date-chips-container" id="dateChipsContainer"></div>
+                            <div style="display: flex; gap: 6px; margin-top: 6px;" id="datePickerRow">
+                                <input type="date" id="field_date_picker" style="flex: 1;">
+                                <button type="button" id="addDateBtn" style="padding: 0.4rem 0.75rem; background: #2563eb; color: #fff; border: none; border-radius: 6px; cursor: pointer; font-weight: 600;">Add</button>
+                            </div>
+                            <input type="hidden" id="field_date" name="date">
                         </div>
 
                         <div class="field-group">
@@ -629,19 +666,6 @@ $events = array_map(function($act) use ($managedOrgIds) {
         updateClock();
         setInterval(updateClock, 1000);
 
-        // Global keyboard tracker for Ctrl/Cmd key multi-selection
-        let isCtrlDown = false;
-        window.addEventListener('keydown', function(e) {
-            if (e.key === 'Control' || e.key === 'Meta' || e.ctrlKey || e.metaKey) {
-                isCtrlDown = true;
-            }
-        });
-        window.addEventListener('keyup', function(e) {
-            if (e.key === 'Control' || e.key === 'Meta' || (!e.ctrlKey && !e.metaKey)) {
-                isCtrlDown = false;
-            }
-        });
-
         document.addEventListener('DOMContentLoaded', function() {
             var calendarEl = document.getElementById('ecams-calendar');
             var dbEvents = <?php echo json_encode($events); ?>;
@@ -651,7 +675,7 @@ $events = array_map(function($act) use ($managedOrgIds) {
             var activeEventId = null;
             var currentSelectedDate = null;
             var currentDayActivities = [];
-            var selectedDates = []; // Array storing clicked calendar dates
+            var selectedDates = [];
 
             var panel = document.getElementById('activityPanel');
             var tabExisting = document.getElementById('tabExisting');
@@ -665,7 +689,7 @@ $events = array_map(function($act) use ($managedOrgIds) {
 
             var actionBtn = document.getElementById('actionBtn');
             var deleteBtn = document.getElementById('deleteBtn');
-            var formInputs = document.querySelectorAll('#activityForm input:not([readonly]), #activityForm select');
+            var formInputs = document.querySelectorAll('#activityForm input:not([readonly], [type="hidden"]), #activityForm select');
             var navBtnActivity = document.getElementById('navBtnActivity');
 
             navBtnActivity.addEventListener('click', function(e) {
@@ -689,6 +713,7 @@ $events = array_map(function($act) use ($managedOrgIds) {
                 calendarEl.classList.remove('calendar-active-mode-red', 'calendar-active-mode-blue');
                 selectedDates = [];
                 currentSelectedDate = null;
+                renderDateChips();
             }
 
             function updateSelectionHighlight() {
@@ -722,10 +747,65 @@ $events = array_map(function($act) use ($managedOrgIds) {
                 });
             }
 
-            // Prevent context menu from appearing on Mac when Ctrl + Clicking calendar cells
-            calendarEl.addEventListener('contextmenu', function(e) {
-                if (isCtrlDown || e.ctrlKey || e.metaKey) {
-                    e.preventDefault();
+            function renderDateChips() {
+                var container = document.getElementById('dateChipsContainer');
+                if (!container) return;
+                container.innerHTML = '';
+
+                selectedDates.forEach(function(dStr) {
+                    var chip = document.createElement('div');
+                    chip.className = 'date-chip';
+                    chip.textContent = dStr;
+
+                    if (currentMode === 'create') {
+                        var removeBtn = document.createElement('span');
+                        removeBtn.className = 'remove-date';
+                        removeBtn.textContent = '×';
+                        removeBtn.addEventListener('click', function(e) {
+                            e.stopPropagation();
+                            selectedDates = selectedDates.filter(d => d !== dStr);
+                            if (selectedDates.length === 0) {
+                                closeRightPanel();
+                            } else {
+                                renderDateChips();
+                                updateSelectionHighlight();
+                                checkFormModifications();
+                            }
+                        });
+                        chip.appendChild(removeBtn);
+                    }
+
+                    container.appendChild(chip);
+                });
+
+                document.getElementById('field_date').value = selectedDates.join(', ');
+                checkFormModifications();
+            }
+
+            // Add date via right panel date picker button
+            document.getElementById('addDateBtn').addEventListener('click', function() {
+                var picker = document.getElementById('field_date_picker');
+                var val = picker.value;
+                if (!val) return;
+
+                var todayStr = getTodayDateStr();
+                if (val < todayStr) {
+                    alert('Cannot select past dates.');
+                    return;
+                }
+
+                if (!selectedDates.includes(val)) {
+                    selectedDates.push(val);
+                }
+
+                picker.value = '';
+
+                if (!panel.classList.contains('active') || currentMode !== 'create') {
+                    openActivityPanelForCreate(val);
+                } else {
+                    renderDateChips();
+                    calendarEl.classList.add('calendar-active-mode-blue');
+                    updateSelectionHighlight();
                 }
             });
 
@@ -745,64 +825,49 @@ $events = array_map(function($act) use ($managedOrgIds) {
                 },
 
                 dateClick: function(info) {
-    var clickedDateStr = info.dateStr;
-    var todayStr = getTodayDateStr();
-    var isPast = clickedDateStr < todayStr;
+                    var clickedDateStr = info.dateStr;
+                    var todayStr = getTodayDateStr();
+                    var isPast = clickedDateStr < todayStr;
 
-    if (isPast) return; // Prevent selecting past dates
+                    currentDayActivities = calendar.getEvents().filter(function(e) {
+                        return e.startStr.split('T')[0] === clickedDateStr;
+                    });
 
-    currentDayActivities = calendar.getEvents().filter(function(e) {
-        return e.startStr.split('T')[0] === clickedDateStr;
-    });
-
-    // Toggle date in the selectedDates array
-    var idx = selectedDates.indexOf(clickedDateStr);
-    if (idx > -1) {
-        // Date is already selected, so remove it (deselect)
-        selectedDates.splice(idx, 1);
-    } else {
-        // Add date to selection
-        selectedDates.push(clickedDateStr);
-    }
-
-    if (selectedDates.length === 0) {
-        closeRightPanel();
-        return;
-    }
-
-    // Apply active blue mode and update visual class toggling
-    calendarEl.classList.add('calendar-active-mode-blue');
-    updateSelectionHighlight();
-
-    // Open the create panel with the comma-separated dates
-    openActivityPanelForCreate(selectedDates.join(', '));
-}else {
-                        if (isPast && currentDayActivities.length === 0) {
-                            return;
-                        }
-
-                        var isAlreadySelected = selectedDates.length === 1 && selectedDates[0] === clickedDateStr;
+                    if (currentDayActivities.length > 0) {
                         unselectCalendarDate();
-
-                        if (isAlreadySelected) {
-                            closeRightPanel();
-                            return;
-                        }
-
                         selectedDates = [clickedDateStr];
                         currentSelectedDate = clickedDateStr;
-
-                        if (currentDayActivities.length > 0) {
+                        renderDateChips();
+                        if (!isPast) {
                             calendarEl.classList.add('calendar-active-mode-red');
-                            openPanelWithActivityList(currentDayActivities);
-                            if (!isPast) {
-                                applyHeatmapSpread(clickedDateStr);
-                            }
-                        } else {
-                            calendarEl.classList.add('calendar-active-mode-blue');
-                            openActivityPanelForCreate(clickedDateStr);
                             applyHeatmapSpread(clickedDateStr);
                         }
+                        openPanelWithActivityList(currentDayActivities);
+                        return;
+                    }
+
+                    if (isPast) return;
+
+                    // Toggle date selection when clicking calendar cells
+                    var idx = selectedDates.indexOf(clickedDateStr);
+                    if (idx > -1) {
+                        selectedDates.splice(idx, 1);
+                    } else {
+                        selectedDates.push(clickedDateStr);
+                    }
+
+                    if (selectedDates.length === 0) {
+                        closeRightPanel();
+                        return;
+                    }
+
+                    calendarEl.classList.add('calendar-active-mode-blue');
+                    updateSelectionHighlight();
+
+                    if (!panel.classList.contains('active') || currentMode !== 'create') {
+                        openActivityPanelForCreate();
+                    } else {
+                        renderDateChips();
                     }
                 },
 
@@ -814,6 +879,7 @@ $events = array_map(function($act) use ($managedOrgIds) {
                     unselectCalendarDate();
                     selectedDates = [eventDateStr];
                     currentSelectedDate = eventDateStr;
+                    renderDateChips();
                     currentDayActivities = calendar.getEvents().filter(function(e) {
                         return e.startStr.split('T')[0] === currentSelectedDate;
                     });
@@ -984,12 +1050,15 @@ $events = array_map(function($act) use ($managedOrgIds) {
                 oidSelect.value = initialActivityData.oid;
 
                 document.getElementById('field_aname').value = initialActivityData.aname;
-                document.getElementById('field_date').value = initialActivityData.date;
+                selectedDates = [initialActivityData.date];
+                renderDateChips();
                 document.getElementById('field_room').value = initialActivityData.room;
                 document.getElementById('field_timeslot').value = initialActivityData.timeslot;
 
                 const todayStr = getTodayDateStr();
                 const isPast = initialActivityData.date < todayStr;
+
+                document.getElementById('datePickerRow').style.display = 'none'; // hide date picker in modify mode
 
                 if (!isManaged) {
                     formInputs.forEach(inp => inp.disabled = true);
@@ -1015,9 +1084,7 @@ $events = array_map(function($act) use ($managedOrgIds) {
 
                 formInputs.forEach(inp => inp.disabled = false);
                 document.getElementById('field_aid').disabled = true;
-                
-                var dateInput = document.getElementById('field_date');
-                dateInput.readOnly = true;
+                document.getElementById('datePickerRow').style.display = 'flex'; // show date picker in create mode
 
                 var oidSelect = document.getElementById('field_oid');
                 Array.from(oidSelect.options).forEach(function(opt) {
@@ -1050,9 +1117,18 @@ $events = array_map(function($act) use ($managedOrgIds) {
                 document.getElementById('field_aid').value = '';
                 document.getElementById('field_oid').value = '';
                 document.getElementById('field_aname').value = '';
-                
-                // Populate date input directly from the selectedDates array
-                dateInput.value = selectedDates.length > 0 ? selectedDates.join(', ') : (dateVal || '');
+
+                if (dateVal) {
+                    var parsedDates = dateVal.split(',').map(s => s.trim()).filter(Boolean);
+                    parsedDates.forEach(d => {
+                        if (!selectedDates.includes(d)) selectedDates.push(d);
+                    });
+                } else if (selectedDates.length === 0 && currentSelectedDate) {
+                    selectedDates = [currentSelectedDate];
+                }
+
+                renderDateChips();
+                updateSelectionHighlight();
 
                 document.getElementById('field_room').value = '';
                 document.getElementById('field_timeslot').value = 'Lunch Recess';
@@ -1097,7 +1173,8 @@ $events = array_map(function($act) use ($managedOrgIds) {
                 if (currentMode === 'create') {
                     var hasContent = document.getElementById('field_aname').value.trim() !== '' &&
                                      document.getElementById('field_oid').value !== '' &&
-                                     document.getElementById('field_room').value.trim() !== '';
+                                     document.getElementById('field_room').value.trim() !== '' &&
+                                     selectedDates.length > 0;
                     actionBtn.disabled = !hasContent;
                 } else {
                     var isModified = 
