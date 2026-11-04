@@ -807,8 +807,8 @@ $events = array_map(function($act) use ($managedOrgIds) {
                         return e.startStr.split('T')[0] === clickedDateStr;
                     });
 
-                    // 1. Same date double click / toggle close when panel is active
-                    if (panel.classList.contains('active') && currentSelectedDate === clickedDateStr && currentMode !== 'create') {
+                    // 1. If clicking the exact same date when panel is open -> deselect & close panel
+                    if (panel.classList.contains('active') && currentSelectedDate === clickedDateStr && currentMode !== 'create' && selectedDates.length === 1) {
                         closeRightPanel();
                         return;
                     }
@@ -861,7 +861,7 @@ $events = array_map(function($act) use ($managedOrgIds) {
                     var todayStr = getTodayDateStr();
                     var isPast = eventDateStr < todayStr;
 
-                    if (panel.classList.contains('active') && currentSelectedDate === eventDateStr && currentMode !== 'create') {
+                    if (panel.classList.contains('active') && currentSelectedDate === eventDateStr && currentMode !== 'create' && selectedDates.length === 1) {
                         closeRightPanel();
                         return;
                     }
@@ -1103,10 +1103,16 @@ $events = array_map(function($act) use ($managedOrgIds) {
             returnBackBtn.addEventListener('click', function() {
                 activityFormView.style.display = 'none';
                 activitiesListView.style.display = 'block';
+                // Switch styling back to red when returning from create back to existing activity list
+                calendarEl.classList.remove('calendar-active-mode-blue');
+                calendarEl.classList.add('calendar-active-mode-red');
             });
 
             tabExisting.addEventListener('click', function() {
                 if (currentDayActivities.length > 0) {
+                    // Switch back to red mode when clicking Existing Activities tab
+                    calendarEl.classList.remove('calendar-active-mode-blue');
+                    calendarEl.classList.add('calendar-active-mode-red');
                     openPanelWithActivityList(currentDayActivities);
                 }
             });
