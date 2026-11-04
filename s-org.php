@@ -89,6 +89,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     exit;
 }
 
+// Load pending join requests for UI state checking
+$jsonFile = 'join_requests.json';
+$allRequests = [];
+if (file_exists($jsonFile)) {
+    $jsonContent = file_get_contents($jsonFile);
+    $allRequests = json_decode($jsonContent, true) ?? [];
+}
+
 $orgsData = [];
 if (isset($conn) && $conn instanceof mysqli) {
     try {
@@ -123,8 +131,19 @@ if (isset($conn) && $conn instanceof mysqli) {
                     $memRes = $memStmt->get_result();
                     $org['members'] = $memRes->fetch_all(MYSQLI_ASSOC);
                     $memStmt->close();
+                    $org['has_pending_request'] = false;
                 } else {
                     $org['members'] = [];
+                    
+                    // Check if student has a pending join request for this organisation
+                    $hasPending = false;
+                    foreach ($allRequests as $req) {
+                        if ($req['oid'] === $org['oid'] && $req['sid'] == $studentUid && $req['status'] === 'pending') {
+                            $hasPending = true;
+                            break;
+                        }
+                    }
+                    $org['has_pending_request'] = $hasPending;
                 }
 
                 $safeOid = preg_replace('/[^a-zA-Z0-9_-]/', '_', $org['oid']);
@@ -251,6 +270,12 @@ if (isset($conn) && $conn instanceof mysqli) {
         .join-textarea:focus { border-color: #2563eb; box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.15); }
         .btn-request-join { width: 100%; background-color: #2563eb; color: #ffffff; border: none; padding: 8px; border-radius: 6px; font-weight: 700; cursor: pointer; }
         .btn-request-join:hover { background-color: #1d4ed8; }
+
+        .pending-request-notice {
+            flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
+            background: #f0f9ff; border: 1px dashed #0284c7; border-radius: 8px; padding: 1rem;
+            text-align: center; color: #0369a1; font-size: 0.85rem; font-weight: 600; line-height: 1.4;
+        }
     </style>
 </head>
 <body>
@@ -295,6 +320,7 @@ if (isset($conn) && $conn instanceof mysqli) {
                         $hasImage = !empty($org['image_path']);
                         $monitorUid = $org['monitor_uid'] ?? '';
                         $isMember = ($org['is_member'] > 0);
+                        $hasPending = $org['has_pending_request'] ?? false;
                     ?>
                         <div class="org-vertical-box" data-oid="<?= htmlspecialchars($org['oid']) ?>" data-is-member="<?= $isMember ? 'true' : 'false' ?>" style="<?= $isMember ? '' : 'display: none;' ?>">
                             <div class="org-header-section">
@@ -338,6 +364,12 @@ if (isset($conn) && $conn instanceof mysqli) {
                                     <?php else: ?>
                                         <div class="no-members" style="padding: 10px; font-size: 0.85rem; color: #64748b;">No members enrolled</div>
                                     <?php endif; ?>
+                                </div>
+                            <?php elseif ($hasPending): ?>
+                                <div class="members-section-title">Request Status</div>
+                                <div class="pending-request-notice">
+                                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-bottom: 6px;"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
+                                    Join request sent.<br>Please wait for the teacher's response.
                                 </div>
                             <?php else: ?>
                                 <div class="members-section-title">Request to Join</div>
@@ -470,7 +502,7 @@ if (isset($conn) && $conn instanceof mysqli) {
                 .then(data => {
                     if (data.success) {
                         alert('Join request submitted successfully!');
-                        box.querySelector('.join-textarea').value = '';
+                        window.location.reload();
                     } else {
                         alert('Error: ' + data.message);
                     }
