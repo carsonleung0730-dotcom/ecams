@@ -45,7 +45,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     }
 
     // File-based JSON storage
-    $jsonFile = 'join_requests.json';
+    $jsonFile = __DIR__ . '/join_requests.json';
     $requests = [];
     if (file_exists($jsonFile)) {
         $jsonContent = file_get_contents($jsonFile);
