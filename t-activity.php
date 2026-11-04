@@ -725,7 +725,7 @@ $events = array_map(function($act) use ($managedOrgIds) {
                 if (!container) return;
                 container.innerHTML = '';
 
-                selectedDates.forEach(function(dStr) {
+                selectedDates.forEach(function(dStr, index) {
                     var chip = document.createElement('div');
                     chip.className = 'date-chip';
                     chip.textContent = dStr;
@@ -736,13 +736,18 @@ $events = array_map(function($act) use ($managedOrgIds) {
                         removeBtn.textContent = '×';
                         removeBtn.addEventListener('click', function(e) {
                             e.stopPropagation();
-                            selectedDates = selectedDates.filter(d => d !== dStr);
-                            if (selectedDates.length === 0) {
+                            // Rule: if the first (primary) date is deselected/removed, close right panel and clear all
+                            if (index === 0) {
                                 closeRightPanel();
                             } else {
-                                renderDateChips();
-                                updateSelectionHighlight();
-                                checkFormModifications();
+                                selectedDates = selectedDates.filter(d => d !== dStr);
+                                if (selectedDates.length === 0) {
+                                    closeRightPanel();
+                                } else {
+                                    renderDateChips();
+                                    updateSelectionHighlight();
+                                    checkFormModifications();
+                                }
                             }
                         });
                         chip.appendChild(removeBtn);
@@ -807,7 +812,7 @@ $events = array_map(function($act) use ($managedOrgIds) {
                         return e.startStr.split('T')[0] === clickedDateStr;
                     });
 
-                    // 1. If clicking the exact same date when panel is open -> deselect & close panel
+                    // 1. If clicking exact same date in existing/modify mode -> toggle close panel
                     if (panel.classList.contains('active') && currentSelectedDate === clickedDateStr && currentMode !== 'create' && selectedDates.length === 1) {
                         closeRightPanel();
                         return;
@@ -817,6 +822,11 @@ $events = array_map(function($act) use ($managedOrgIds) {
                     if (panel.classList.contains('active') && currentMode === 'create') {
                         var idx = selectedDates.indexOf(clickedDateStr);
                         if (idx > -1) {
+                            // Rule: if clicking the first (primary) date to deselect it, close panel entirely
+                            if (idx === 0) {
+                                closeRightPanel();
+                                return;
+                            }
                             selectedDates.splice(idx, 1);
                         } else {
                             if (!isPast) {
@@ -824,7 +834,6 @@ $events = array_map(function($act) use ($managedOrgIds) {
                             }
                         }
 
-                        // If user deselects all dates or the original/primary date, close panel entirely
                         if (selectedDates.length === 0) {
                             closeRightPanel();
                             return;
@@ -837,13 +846,13 @@ $events = array_map(function($act) use ($managedOrgIds) {
                         return;
                     }
 
-                    // 3. STRICT SINGLE SELECTION OUTSIDE CREATE NEW: Clicking another date deselects current and selects new
+                    // 3. ALWAYS DESELECT CURRENT & SELECT NEW DATE OUTSIDE CREATE NEW MODE
                     currentSelectedDate = clickedDateStr;
 
                     if (currentDayActivities.length > 0) {
                         calendarEl.classList.remove('calendar-active-mode-blue');
                         calendarEl.classList.add('calendar-active-mode-red');
-                        selectedDates = [clickedDateStr]; // strictly single date
+                        selectedDates = [clickedDateStr]; // Strictly single date
                         updateSelectionHighlight();
                         renderDateChips();
                         openPanelWithActivityList(currentDayActivities);
@@ -851,7 +860,7 @@ $events = array_map(function($act) use ($managedOrgIds) {
                         if (isPast) return;
                         calendarEl.classList.remove('calendar-active-mode-red');
                         calendarEl.classList.add('calendar-active-mode-blue');
-                        selectedDates = [clickedDateStr]; // strictly single date
+                        selectedDates = [clickedDateStr]; // Strictly single date
                         updateSelectionHighlight();
                         openActivityPanelForCreate(clickedDateStr);
                     }
@@ -869,7 +878,7 @@ $events = array_map(function($act) use ($managedOrgIds) {
 
                     calendarEl.classList.remove('calendar-active-mode-blue');
                     calendarEl.classList.add('calendar-active-mode-red');
-                    selectedDates = [eventDateStr]; // strictly single date
+                    selectedDates = [eventDateStr]; // Strictly single date
                     currentSelectedDate = eventDateStr;
                     updateSelectionHighlight();
                     renderDateChips();
@@ -909,7 +918,7 @@ $events = array_map(function($act) use ($managedOrgIds) {
             function openPanelWithActivityList(activitiesList) {
                 resetPanelPosition();
 
-                // Switch calendar highlighting explicitly back to red when viewing existing activities
+                // Keep calendar highlighted in red for existing activities
                 calendarEl.classList.remove('calendar-active-mode-blue');
                 calendarEl.classList.add('calendar-active-mode-red');
 
@@ -973,7 +982,6 @@ $events = array_map(function($act) use ($managedOrgIds) {
                 activeEventId = eventObj.id;
                 var isManaged = props.isManaged;
 
-                // Ensure modify mode keeps the calendar highlighted in red
                 calendarEl.classList.remove('calendar-active-mode-blue');
                 calendarEl.classList.add('calendar-active-mode-red');
 
@@ -1018,7 +1026,7 @@ $events = array_map(function($act) use ($managedOrgIds) {
                 oidSelect.value = initialActivityData.oid;
 
                 document.getElementById('field_aname').value = initialActivityData.aname;
-                selectedDates = [initialActivityData.date]; // strictly single date
+                selectedDates = [initialActivityData.date];
                 renderDateChips();
                 document.getElementById('field_room').value = initialActivityData.room;
                 document.getElementById('field_timeslot').value = initialActivityData.timeslot;
@@ -1026,7 +1034,7 @@ $events = array_map(function($act) use ($managedOrgIds) {
                 const todayStr = getTodayDateStr();
                 const isPast = initialActivityData.date < todayStr;
 
-                document.getElementById('datePickerRow').style.display = 'none'; // hide date picker in modify mode
+                document.getElementById('datePickerRow').style.display = 'none';
 
                 if (!isManaged) {
                     formInputs.forEach(inp => inp.disabled = true);
@@ -1052,7 +1060,7 @@ $events = array_map(function($act) use ($managedOrgIds) {
 
                 formInputs.forEach(inp => inp.disabled = false);
                 document.getElementById('field_aid').disabled = true;
-                document.getElementById('datePickerRow').style.display = 'flex'; // show date picker in create mode
+                document.getElementById('datePickerRow').style.display = 'flex';
 
                 var oidSelect = document.getElementById('field_oid');
                 Array.from(oidSelect.options).forEach(function(opt) {
@@ -1112,10 +1120,8 @@ $events = array_map(function($act) use ($managedOrgIds) {
             returnBackBtn.addEventListener('click', function() {
                 activityFormView.style.display = 'none';
                 activitiesListView.style.display = 'block';
-                // Switch styling back to red when returning from form back to existing activity list
                 calendarEl.classList.remove('calendar-active-mode-blue');
                 calendarEl.classList.add('calendar-active-mode-red');
-                // Enforce single date when exiting create mode back to modify/view
                 if (selectedDates.length > 1) {
                     selectedDates = [selectedDates[0]];
                     renderDateChips();
@@ -1125,10 +1131,9 @@ $events = array_map(function($act) use ($managedOrgIds) {
 
             tabExisting.addEventListener('click', function() {
                 if (currentDayActivities.length > 0) {
-                    // Switch back to red mode when clicking Existing Activities tab
                     calendarEl.classList.remove('calendar-active-mode-blue');
                     calendarEl.classList.add('calendar-active-mode-red');
-                    selectedDates = [currentSelectedDate || selectedDates[0]]; // restrict to single date
+                    selectedDates = [currentSelectedDate || selectedDates[0]];
                     renderDateChips();
                     updateSelectionHighlight();
                     openPanelWithActivityList(currentDayActivities);
