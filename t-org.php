@@ -16,228 +16,287 @@ if (!isset($_SESSION['uid']) && !isset($_SESSION['user_id'])) {
 // Retrieve logged-in teacher identifier from session
 $teacherUid = $_SESSION['uid'] ?? $_SESSION['user_id'] ?? $_SESSION['id'] ?? 1;
 
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'save_image') {
+// Handle AJAX actions for approving or rejecting join requests
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
     header('Content-Type: application/json');
-    $oid = preg_replace('/[^a-zA-Z0-9_-]/', '_', $_POST['oid']);
-    $imageData = $_POST['image'];
+    $action = $_POST['action'];
 
-    // Security check: ensure teacher only updates images for what they manage
-    $chk = $conn->prepare("SELECT tid FROM organisations WHERE oid = ?");
-    $chk->bind_param("s", $_POST['oid']);
-    $chk->execute();
-    $chk->bind_result($orgTid);
-    $chk->fetch();
-    $chk->close();
+    if ($action === 'save_image') {
+        $oid = preg_replace('/[^a-zA-Z0-9_-]/', '_', $_POST['oid']);
+        $imageData = $_POST['image'];
 
-    if ($orgTid != $teacherUid) {
-        echo json_encode(['success' => false, 'message' => 'Unauthorized: You can only modify organisations you manage.']);
-        exit;
-    }
+        $chk = $conn->prepare("SELECT tid FROM organisations WHERE oid = ?");
+        $chk->bind_param("s", $_POST['oid']);
+        $chk->execute();
+        $chk->bind_result($orgTid);
+        $chk->fetch();
+        $chk->close();
 
-    if (!is_dir('uploads')) {
-        mkdir('uploads', 0777, true);
-    }
-
-    list($type, $imageData) = explode(';', $imageData);
-    list(, $imageData) = explode(',', $imageData);
-    $decodedData = base64_decode($imageData);
-
-    $filePath = "uploads/org_{$oid}.png";
-    if (file_put_contents($filePath, $decodedData)) {
-        echo json_encode(['success' => true, 'path' => $filePath]);
-    } else {
-        echo json_encode(['success' => false, 'message' => 'Failed to save image file.']);
-    }
-    exit;
-}
-
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'delete_image') {
-    header('Content-Type: application/json');
-    $oid = preg_replace('/[^a-zA-Z0-9_-]/', '_', $_POST['oid'] ?? '');
-    
-    // Security check: ensure teacher only deletes images for what they manage
-    $chk = $conn->prepare("SELECT tid FROM organisations WHERE oid = ?");
-    $chk->bind_param("s", $oid);
-    $chk->execute();
-    $chk->bind_result($orgTid);
-    $chk->fetch();
-    $chk->close();
-
-    if ($orgTid != $teacherUid) {
-        echo json_encode(['success' => false, 'message' => 'Unauthorized: You can only modify organisations you manage.']);
-        exit;
-    }
-
-    $filePath = "uploads/org_{$oid}.png";
-    
-    if (file_exists($filePath)) {
-        if (unlink($filePath)) {
-            echo json_encode(['success' => true]);
-        } else {
-            echo json_encode(['success' => false, 'message' => 'Failed to delete image file.']);
+        if ($orgTid != $teacherUid) {
+            echo json_encode(['success' => false, 'message' => 'Unauthorized: You can only modify organisations you manage.']);
+            exit;
         }
-    } else {
-        echo json_encode(['success' => true]);
-    }
-    exit;
-}
 
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'delete_org') {
-    header('Content-Type: application/json');
-    $oid = trim($_POST['oid'] ?? '');
-    
-    // Security check: ensure teacher only deletes what they manage
-    $chk = $conn->prepare("SELECT tid FROM organisations WHERE oid = ?");
-    $chk->bind_param("s", $oid);
-    $chk->execute();
-    $chk->bind_result($orgTid);
-    $chk->fetch();
-    $chk->close();
+        if (!is_dir('uploads')) {
+            mkdir('uploads', 0777, true);
+        }
 
-    if ($orgTid != $teacherUid) {
-        echo json_encode(['success' => false, 'message' => 'Unauthorized: You can only delete organisations you manage.']);
+        list($type, $imageData) = explode(';', $imageData);
+        list(, $imageData) = explode(',', $imageData);
+        $decodedData = base64_decode($imageData);
+
+        $filePath = "uploads/org_{$oid}.png";
+        if (file_put_contents($filePath, $decodedData)) {
+            echo json_encode(['success' => true, 'path' => $filePath]);
+        } else {
+            echo json_encode(['success' => false, 'message' => 'Failed to save image file.']);
+        }
         exit;
     }
 
-    $conn->begin_transaction();
-    try {
-        $delMon = $conn->prepare("DELETE FROM monitor WHERE oid = ?");
-        $delMon->bind_param("s", $oid);
-        $delMon->execute();
-        $delMon->close();
+    if ($action === 'delete_image') {
+        $oid = preg_replace('/[^a-zA-Z0-9_-]/', '_', $_POST['oid'] ?? '');
+        
+        $chk = $conn->prepare("SELECT tid FROM organisations WHERE oid = ?");
+        $chk->bind_param("s", $oid);
+        $chk->execute();
+        $chk->bind_result($orgTid);
+        $chk->fetch();
+        $chk->close();
 
-        $delMem = $conn->prepare("DELETE FROM membership WHERE oid = ?");
-        $delMem->bind_param("s", $oid);
-        $delMem->execute();
-        $delMem->close();
+        if ($orgTid != $teacherUid) {
+            echo json_encode(['success' => false, 'message' => 'Unauthorized: You can only modify organisations you manage.']);
+            exit;
+        }
 
-        $delOrg = $conn->prepare("DELETE FROM organisations WHERE oid = ?");
-        $delOrg->bind_param("s", $oid);
-        $delOrg->execute();
-        $delOrg->close();
-
-        $safeOid = preg_replace('/[^a-zA-Z0-9_-]/', '_', $oid);
-        $filePath = "uploads/org_{$safeOid}.png";
+        $filePath = "uploads/org_{$oid}.png";
         if (file_exists($filePath)) {
             unlink($filePath);
         }
-
-        $conn->commit();
         echo json_encode(['success' => true]);
-    } catch (Exception $e) {
-        $conn->rollback();
-        echo json_encode(['success' => false, 'message' => $e->getMessage()]);
-    }
-    exit;
-}
-
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'update_org') {
-    header('Content-Type: application/json');
-    $oldOid = trim($_POST['old_oid'] ?? '');
-    $newOid = trim($_POST['new_oid'] ?? '');
-    $oname = trim($_POST['oname'] ?? '');
-    $tid = trim($_POST['tid'] ?? null);
-    $members = $_POST['members'] ?? [];
-    $monitors = $_POST['monitors'] ?? [];
-
-    // Security check: ensure teacher only updates what they manage
-    $chk = $conn->prepare("SELECT tid FROM organisations WHERE oid = ?");
-    $chk->bind_param("s", $oldOid);
-    $chk->execute();
-    $chk->bind_result($orgTid);
-    $chk->fetch();
-    $chk->close();
-
-    if ($orgTid != $teacherUid) {
-        echo json_encode(['success' => false, 'message' => 'Unauthorized: You can only modify organisations you manage.']);
         exit;
     }
 
-    if (empty($newOid) || empty($oname)) {
-        echo json_encode(['success' => false, 'message' => 'Organisation ID and Name are required.']);
-        exit;
-    }
+    if ($action === 'delete_org') {
+        $oid = trim($_POST['oid'] ?? '');
+        
+        $chk = $conn->prepare("SELECT tid FROM organisations WHERE oid = ?");
+        $chk->bind_param("s", $oid);
+        $chk->execute();
+        $chk->bind_result($orgTid);
+        $chk->fetch();
+        $chk->close();
 
-    if ($oldOid !== $newOid) {
-        $chkDup = $conn->prepare("SELECT COUNT(*) FROM organisations WHERE oid = ?");
-        $chkDup->bind_param("s", $newOid);
-        $chkDup->execute();
-        $chkDup->bind_result($dupCount);
-        $chkDup->fetch();
-        $chkDup->close();
-
-        if ($dupCount > 0) {
-            echo json_encode(['success' => false, 'message' => 'Organisation ID already exists.']);
+        if ($orgTid != $teacherUid) {
+            echo json_encode(['success' => false, 'message' => 'Unauthorized: You can only delete organisations you manage.']);
             exit;
         }
+
+        $conn->begin_transaction();
+        try {
+            $delMon = $conn->prepare("DELETE FROM monitor WHERE oid = ?");
+            $delMon->bind_param("s", $oid);
+            $delMon->execute();
+            $delMon->close();
+
+            $delMem = $conn->prepare("DELETE FROM membership WHERE oid = ?");
+            $delMem->bind_param("s", $oid);
+            $delMem->execute();
+            $delMem->close();
+
+            $delOrg = $conn->prepare("DELETE FROM organisations WHERE oid = ?");
+            $delOrg->bind_param("s", $oid);
+            $delOrg->execute();
+            $delOrg->close();
+
+            $safeOid = preg_replace('/[^a-zA-Z0-9_-]/', '_', $oid);
+            $filePath = "uploads/org_{$safeOid}.png";
+            if (file_exists($filePath)) {
+                unlink($filePath);
+            }
+
+            $conn->commit();
+            echo json_encode(['success' => true]);
+        } catch (Exception $e) {
+            $conn->rollback();
+            echo json_encode(['success' => false, 'message' => $e->getMessage()]);
+        }
+        exit;
     }
 
-    $conn->begin_transaction();
-    try {
-        $finalTid = empty($tid) ? null : $tid;
+    if ($action === 'update_org') {
+        $oldOid = trim($_POST['old_oid'] ?? '');
+        $newOid = trim($_POST['new_oid'] ?? '');
+        $oname = trim($_POST['oname'] ?? '');
+        $tid = trim($_POST['tid'] ?? null);
+        $members = $_POST['members'] ?? [];
+        $monitors = $_POST['monitors'] ?? [];
+
+        $chk = $conn->prepare("SELECT tid FROM organisations WHERE oid = ?");
+        $chk->bind_param("s", $oldOid);
+        $chk->execute();
+        $chk->bind_result($orgTid);
+        $chk->fetch();
+        $chk->close();
+
+        if ($orgTid != $teacherUid) {
+            echo json_encode(['success' => false, 'message' => 'Unauthorized: You can only modify organisations you manage.']);
+            exit;
+        }
+
+        if (empty($newOid) || empty($oname)) {
+            echo json_encode(['success' => false, 'message' => 'Organisation ID and Name are required.']);
+            exit;
+        }
+
         if ($oldOid !== $newOid) {
-            $updMonOid = $conn->prepare("UPDATE monitor SET oid = ? WHERE oid = ?");
-            $updMonOid->bind_param("ss", $newOid, $oldOid);
-            $updMonOid->execute();
-            $updMonOid->close();
+            $chkDup = $conn->prepare("SELECT COUNT(*) FROM organisations WHERE oid = ?");
+            $chkDup->bind_param("s", $newOid);
+            $chkDup->execute();
+            $chkDup->bind_result($dupCount);
+            $chkDup->fetch();
+            $chkDup->close();
 
-            $updMemOid = $conn->prepare("UPDATE membership SET oid = ? WHERE oid = ?");
-            $updMemOid->bind_param("ss", $newOid, $oldOid);
-            $updMemOid->execute();
-            $updMemOid->close();
-
-            $updOrg = $conn->prepare("UPDATE organisations SET oid = ?, oname = ?, tid = ? WHERE oid = ?");
-            $updOrg->bind_param("ssss", $newOid, $oname, $finalTid, $oldOid);
-            $updOrg->execute();
-            $updOrg->close();
-
-            $oldImg = "uploads/org_" . preg_replace('/[^a-zA-Z0-9_-]/', '_', $oldOid) . ".png";
-            $newImg = "uploads/org_" . preg_replace('/[^a-zA-Z0-9_-]/', '_', $newOid) . ".png";
-            if (file_exists($oldImg)) {
-                rename($oldImg, $newImg);
+            if ($dupCount > 0) {
+                echo json_encode(['success' => false, 'message' => 'Organisation ID already exists.']);
+                exit;
             }
-        } else {
-            $stmt = $conn->prepare("UPDATE organisations SET oname = ?, tid = ? WHERE oid = ?");
-            $stmt->bind_param("sss", $oname, $finalTid, $oldOid);
-            $stmt->execute();
-            $stmt->close();
         }
 
-        $delMon = $conn->prepare("DELETE FROM monitor WHERE oid = ?");
-        $delMon->bind_param("s", $newOid);
-        $delMon->execute();
-        $delMon->close();
+        $conn->begin_transaction();
+        try {
+            $finalTid = empty($tid) ? null : $tid;
+            if ($oldOid !== $newOid) {
+                $updMonOid = $conn->prepare("UPDATE monitor SET oid = ? WHERE oid = ?");
+                $updMonOid->bind_param("ss", $newOid, $oldOid);
+                $updMonOid->execute();
+                $updMonOid->close();
 
-        $delMem = $conn->prepare("DELETE FROM membership WHERE oid = ?");
-        $delMem->bind_param("s", $newOid);
-        $delMem->execute();
-        $delMem->close();
+                $updMemOid = $conn->prepare("UPDATE membership SET oid = ? WHERE oid = ?");
+                $updMemOid->bind_param("ss", $newOid, $oldOid);
+                $updMemOid->execute();
+                $updMemOid->close();
 
-        if (!empty($members)) {
-            $memStmt = $conn->prepare("INSERT INTO membership (oid, sid) VALUES (?, ?)");
-            foreach ($members as $sid) {
-                $memStmt->bind_param("ss", $newOid, $sid);
-                $memStmt->execute();
+                $updOrg = $conn->prepare("UPDATE organisations SET oid = ?, oname = ?, tid = ? WHERE oid = ?");
+                $updOrg->bind_param("ssss", $newOid, $oname, $finalTid, $oldOid);
+                $updOrg->execute();
+                $updOrg->close();
+
+                $oldImg = "uploads/org_" . preg_replace('/[^a-zA-Z0-9_-]/', '_', $oldOid) . ".png";
+                $newImg = "uploads/org_" . preg_replace('/[^a-zA-Z0-9_-]/', '_', $newOid) . ".png";
+                if (file_exists($oldImg)) {
+                    rename($oldImg, $newImg);
+                }
+            } else {
+                $stmt = $conn->prepare("UPDATE organisations SET oname = ?, tid = ? WHERE oid = ?");
+                $stmt->bind_param("sss", $oname, $finalTid, $oldOid);
+                $stmt->execute();
+                $stmt->close();
             }
-            $memStmt->close();
-        }
 
-        if (!empty($monitors)) {
-            $monStmt = $conn->prepare("INSERT INTO monitor (oid, mid) VALUES (?, ?)");
-            foreach ($monitors as $mid) {
-                $monStmt->bind_param("ss", $newOid, $mid);
-                $monStmt->execute();
+            $delMon = $conn->prepare("DELETE FROM monitor WHERE oid = ?");
+            $delMon->bind_param("s", $newOid);
+            $delMon->execute();
+            $delMon->close();
+
+            $delMem = $conn->prepare("DELETE FROM membership WHERE oid = ?");
+            $delMem->bind_param("s", $newOid);
+            $delMem->execute();
+            $delMem->close();
+
+            if (!empty($members)) {
+                $memStmt = $conn->prepare("INSERT INTO membership (oid, sid) VALUES (?, ?)");
+                foreach ($members as $sid) {
+                    $memStmt->bind_param("ss", $newOid, $sid);
+                    $memStmt->execute();
+                }
+                $memStmt->close();
             }
-            $monStmt->close();
-        }
 
-        $conn->commit();
-        echo json_encode(['success' => true]);
-    } catch (Exception $e) {
-        $conn->rollback();
-        echo json_encode(['success' => false, 'message' => $e->getMessage()]);
+            if (!empty($monitors)) {
+                $monStmt = $conn->prepare("INSERT INTO monitor (oid, mid) VALUES (?, ?)");
+                foreach ($monitors as $mid) {
+                    $monStmt->bind_param("ss", $newOid, $mid);
+                    $monStmt->execute();
+                }
+                $monStmt->close();
+            }
+
+            $conn->commit();
+            echo json_encode(['success' => true]);
+        } catch (Exception $e) {
+            $conn->rollback();
+            echo json_encode(['success' => false, 'message' => $e->getMessage()]);
+        }
+        exit;
     }
-    exit;
+
+    if ($action === 'approve_request' || $action === 'reject_request') {
+        $reqId = $_POST['req_id'] ?? '';
+        $jsonFile = 'join_requests.json';
+        
+        if (file_exists($jsonFile)) {
+            $requests = json_decode(file_get_contents($jsonFile), true) ?? [];
+            $targetReq = null;
+            
+            foreach ($requests as $i => $req) {
+                if ($req['id'] === $reqId) {
+                    $targetReq = $req;
+                    if ($action === 'approve_request') {
+                        // Add membership in database
+                        $ins = $conn->prepare("INSERT IGNORE INTO membership (oid, sid) VALUES (?, ?)");
+                        $ins->bind_param("ss", $req['oid'], $req['sid']);
+                        $ins->execute();
+                        $ins->close();
+                    }
+                    // Remove request from JSON
+                    array_splice($requests, $i, 1);
+                    break;
+                }
+            }
+            
+            file_put_contents($jsonFile, json_encode($requests, JSON_PRETTY_PRINT));
+            echo json_encode(['success' => true]);
+            exit;
+        }
+        echo json_encode(['success' => false, 'message' => 'Request not found.']);
+        exit;
+    }
+}
+
+// Load pending join requests for organisations managed by this teacher
+$jsonFile = 'join_requests.json';
+$allRequests = [];
+if (file_exists($jsonFile)) {
+    $allRequests = json_decode(file_get_contents($jsonFile), true) ?? [];
+}
+
+// Get managed organization IDs for this teacher
+$managedOids = [];
+$mOrgRes = $conn->prepare("SELECT oid FROM organisations WHERE tid = ?");
+$mOrgRes->bind_param("s", $teacherUid);
+$mOrgRes->execute();
+$mRes = $mOrgRes->get_result();
+while ($row = $mRes->fetch_assoc()) {
+    $managedOids[] = $row['oid'];
+}
+$mOrgRes->close();
+
+$teacherRequests = [];
+foreach ($allRequests as $req) {
+    if ($req['status'] === 'pending' && in_array($req['oid'], $managedOids)) {
+        // Fetch student class + cid
+        $sInfo = $conn->prepare("SELECT class, cid, name FROM users WHERE uid = ?");
+        $sInfo->bind_param("s", $req['sid']);
+        $sInfo->execute();
+        $sInfo->bind_result($sClass, $sCid, $sName);
+        if ($sInfo->fetch()) {
+            $req['class_str'] = trim($sClass . $sCid);
+            $req['student_name'] = $sName;
+        }
+        $sInfo->close();
+        $teacherRequests[] = $req;
+    }
 }
 
 $teachersList = [];
@@ -372,6 +431,26 @@ if ($orgRes) {
         }
         .control-box.grey { background-color: #f1f5f9; color: #94a3b8; border-color: #cbd5e1; cursor: not-allowed; }
         .control-box.blue { background-color: #2563eb; color: #ffffff; border-color: #1d4ed8; cursor: pointer; }
+        
+        /* Red to White Pulse Animation for View Incoming Requests Button (1 cycle per 3 seconds) */
+        @keyframes redWhitePulse {
+            0% { background-color: #dc2626; color: #ffffff; border-color: #991b1b; }
+            50% { background-color: #ffffff; color: #dc2626; border-color: #dc2626; }
+            100% { background-color: #dc2626; color: #ffffff; border-color: #991b1b; }
+        }
+        .requests-btn.has-requests {
+            animation: redWhitePulse 3s infinite;
+            cursor: pointer;
+            pointer-events: auto;
+        }
+        .requests-btn.no-requests {
+            background-color: #f1f5f9;
+            color: #94a3b8;
+            border-color: #cbd5e1;
+            cursor: not-allowed;
+            pointer-events: none;
+        }
+
         .filter-managed-btn {
             background: #ffffff; border: 1px solid #cbd5e1; padding: 4px 10px; border-radius: 4px;
             font-size: 0.75rem; font-weight: 700; cursor: pointer; box-shadow: 0 2px 4px rgba(0,0,0,0.08);
@@ -463,6 +542,36 @@ if ($orgRes) {
         .btn-modal-cancel { background-color: #64748b; }
         .btn-modal-confirm { background-color: #2563eb; }
 
+        /* Custom Popup Modals for Requests */
+        .custom-popup-overlay {
+            position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
+            background-color: rgba(15, 23, 42, 0.6); z-index: 3000; display: none; align-items: center; justify-content: center;
+        }
+        .custom-popup-overlay.active { display: flex; }
+        .custom-popup-box {
+            background-color: #ffffff; width: 90%; max-width: 420px; border-radius: 12px; padding: 1.5rem;
+            box-shadow: 0 10px 25px rgba(0, 0, 0, 0.2); position: relative; max-height: 80vh; display: flex; flex-direction: column;
+        }
+        .popup-close-btn {
+            position: absolute; top: 12px; right: 12px; width: 22px; height: 22px; cursor: pointer; opacity: 0.7;
+        }
+        .popup-close-btn:hover { opacity: 1; }
+        .popup-title { font-size: 1.05rem; font-weight: 800; color: #0f172a; margin-bottom: 1rem; padding-right: 24px; }
+        .requests-list-scroll { flex: 1; overflow-y: auto; max-height: 300px; display: flex; flex-direction: column; gap: 8px; }
+        .request-item-card {
+            background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 6px; padding: 10px; cursor: pointer; transition: background 0.2s;
+        }
+        .request-item-card:hover { background: #eff6ff; border-color: #2563eb; }
+        .req-card-name { font-weight: 700; font-size: 0.9rem; color: #1e293b; }
+        .req-card-sub { font-size: 0.75rem; color: #64748b; margin-top: 2px; }
+
+        .request-reason-text { font-size: 0.9rem; color: #334155; background: #f8fafc; padding: 12px; border-radius: 6px; border: 1px solid #cbd5e1; margin-bottom: 1rem; min-height: 80px; }
+        .popup-actions { display: flex; gap: 10px; }
+        .btn-approve { flex: 1; background-color: #16a34a; color: #ffffff; border: none; padding: 8px; border-radius: 6px; font-weight: 700; cursor: pointer; }
+        .btn-approve:hover { background-color: #15803d; }
+        .btn-reject { flex: 1; background-color: #dc2626; color: #ffffff; border: none; padding: 8px; border-radius: 6px; font-weight: 700; cursor: pointer; }
+        .btn-reject:hover { background-color: #b91c1c; }
+
         /* Editing Mode Scoping Switchers for Managed Orgs */
         body.editing-mode .org-vertical-box[data-is-managed="true"] .delete-arrow-btn,
         body.editing-mode .org-vertical-box[data-is-managed="true"] .btn-upload-file,
@@ -523,6 +632,9 @@ if ($orgRes) {
         <main id="mainContainer">
             <div class="floating-controls">
                 <div class="control-box filter-managed-btn filter-active" id="filterManagedBtn">Show All Organisations</div>
+                <div class="control-box requests-btn <?= count($teacherRequests) > 0 ? 'has-requests' : 'no-requests' ?>" id="viewRequestsBtn">
+                    View Incoming Requests (<?= count($teacherRequests) ?>)
+                </div>
                 <div class="control-box" id="editingModeBtn">Editing Mode</div>
                 <div class="control-box grey" id="modifyBtn" style="display: none;">Modify</div>
             </div>
@@ -633,6 +745,40 @@ if ($orgRes) {
         </main>
     </div>
 
+    <!-- First Popup Modal: Incoming Requests List -->
+    <div class="custom-popup-overlay" id="requestsModal">
+        <div class="custom-popup-box">
+            <img src="arrow.png" alt="Close" class="popup-close-btn" id="closeRequestsModal">
+            <div class="popup-title">Incoming Join Requests</div>
+            <div class="requests-list-scroll" id="requestsListContainer">
+                <?php if (!empty($teacherRequests)): ?>
+                    <?php foreach ($teacherRequests as $req): ?>
+                        <div class="request-item-card" data-req-id="<?= htmlspecialchars($req['id']) ?>" data-uid="<?= htmlspecialchars($req['sid']) ?>" data-name="<?= htmlspecialchars($req['student_name']) ?>" data-class="<?= htmlspecialchars($req['class_str']) ?>" data-oid="<?= htmlspecialchars($req['oid']) ?>" data-reason="<?= htmlspecialchars($req['reason']) ?>">
+                            <div class="req-card-name"><?= htmlspecialchars($req['student_name']) ?> [<?= htmlspecialchars($req['sid']) ?>]</div>
+                            <div class="req-card-sub">Class: <?= htmlspecialchars($req['class_str']) ?> | Org: <?= htmlspecialchars($req['oid']) ?></div>
+                        </div>
+                    <?php endforeach; ?>
+                <?php else: ?>
+                    <div style="text-align: center; color: #64748b; padding: 2rem; font-size: 0.85rem;">No incoming requests.</div>
+                <?php endif; ?>
+            </div>
+        </div>
+    </div>
+
+    <!-- Second Popup Modal: Request Details & Approve/Reject -->
+    <div class="custom-popup-overlay" id="requestDetailModal">
+        <div class="custom-popup-box">
+            <img src="arrow.png" alt="Close" class="popup-close-btn" id="closeDetailModal">
+            <div class="popup-title" id="detailModalTitle">Student Request</div>
+            <div style="font-size: 0.75rem; font-weight: 700; color: #475569; margin-bottom: 4px;">Reason for Joining:</div>
+            <div class="request-reason-text" id="detailReasonText"></div>
+            <div class="popup-actions">
+                <button type="button" class="btn-approve" id="approveReqBtn">Approve</button>
+                <button type="button" class="btn-reject" id="rejectReqBtn">Reject</button>
+            </div>
+        </div>
+    </div>
+
     <div class="crop-modal-overlay" id="cropModal">
         <div class="crop-modal-box">
             <h3>Crop Photo to Square</h3>
@@ -720,11 +866,79 @@ if ($orgRes) {
         }
 
         let isEditingMode = false;
-        let showAllOrgs = false; // Default: show only managed organisations
+        let showAllOrgs = false;
         let hasChanges = false;
         const editingModeBtn = document.getElementById('editingModeBtn');
         const filterManagedBtn = document.getElementById('filterManagedBtn');
         const modifyBtn = document.getElementById('modifyBtn');
+        const viewRequestsBtn = document.getElementById('viewRequestsBtn');
+        const requestsModal = document.getElementById('requestsModal');
+        const closeRequestsModal = document.getElementById('closeRequestsModal');
+        const requestDetailModal = document.getElementById('requestDetailModal');
+        const closeDetailModal = document.getElementById('closeDetailModal');
+
+        let activeReqId = null;
+
+        viewRequestsBtn.addEventListener('click', function() {
+            if (viewRequestsBtn.classList.contains('has-requests')) {
+                requestsModal.classList.add('active');
+            }
+        });
+
+        closeRequestsModal.addEventListener('click', function() {
+            requestsModal.classList.remove('active');
+        });
+
+        closeDetailModal.addEventListener('click', function() {
+            requestDetailModal.classList.remove('active');
+        });
+
+        document.addEventListener('click', function(e) {
+            const card = e.target.closest('.request-item-card');
+            if (card) {
+                activeReqId = card.getAttribute('data-req-id');
+                const name = card.getAttribute('data-name');
+                const uid = card.getAttribute('data-uid');
+                const cls = card.getAttribute('data-class');
+                const oid = card.getAttribute('data-oid');
+                const reason = card.getAttribute('data-reason');
+
+                document.getElementById('detailModalTitle').textContent = `${name} [${uid}] (${cls}) - ${oid}`;
+                document.getElementById('detailReasonText').textContent = reason;
+
+                requestsModal.classList.remove('active');
+                requestDetailModal.classList.add('active');
+            }
+        });
+
+        document.getElementById('approveReqBtn').addEventListener('click', function() {
+            processRequest('approve_request');
+        });
+
+        document.getElementById('rejectReqBtn').addEventListener('click', function() {
+            processRequest('reject_request');
+        });
+
+        function processRequest(actionType) {
+            if (!activeReqId) return;
+
+            const formData = new FormData();
+            formData.append('action', actionType);
+            formData.append('req_id', activeReqId);
+
+            fetch('', { method: 'POST', body: formData })
+            .then(res => res.json())
+            .then(data => {
+                if (data.success) {
+                    window.location.reload();
+                } else {
+                    alert('Error: ' + (data.message || 'Action failed'));
+                }
+            })
+            .catch(err => {
+                alert('Request failed.');
+            });
+        }
 
         editingModeBtn.addEventListener('click', function() {
             isEditingMode = !isEditingMode;
