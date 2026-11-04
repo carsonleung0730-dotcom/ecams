@@ -73,7 +73,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         }
 
         $stmt = $conn->prepare("UPDATE activity SET oid = ?, aname = ?, date = ?, room = ?, timeslot = ? WHERE aid = ?");
-        $stmt->bind_param("issisi", $oid, $aname, $date, $room, $timeslot, $aid);
+        $stmt->bind_param("sssisi", $oid, $aname, $date, $room, $timeslot, $aid);
         if ($stmt->execute()) {
             echo json_encode(['status' => 'success']);
         } else {
@@ -120,7 +120,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         try {
             $createdAids = [];
             $stmt = $conn->prepare("INSERT INTO activity (oid, aname, date, room, timeslot) VALUES (?, ?, ?, ?, ?)");
-            
+            $stmt->bind_param("sssis", $oid, $aname, $date, $room, $timeslot);
             $memStmt = $conn->prepare("SELECT sid FROM membership WHERE oid = ?");
             $memStmt->bind_param("i", $oid);
             $memStmt->execute();
@@ -131,7 +131,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             $attStmt = $conn->prepare("INSERT INTO attendance (aid, sid, attend, rate, `s.rate`) VALUES (?, ?, 0, 10, 10)");
 
             foreach ($dates as $date) {
-                $stmt->bind_param("issis", $oid, $aname, $date, $room, $timeslot);
+                $stmt->bind_param("sssis", $oid, $aname, $date, $room, $timeslot);
                 $stmt->execute();
                 $newAid = $stmt->insert_id;
                 $createdAids[] = [
