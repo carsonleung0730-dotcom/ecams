@@ -632,12 +632,12 @@ $events = array_map(function($act) use ($managedOrgIds) {
         // Global keyboard tracker for Ctrl/Cmd key multi-selection
         let isCtrlDown = false;
         window.addEventListener('keydown', function(e) {
-            if (e.key === 'Control' || e.key === 'Meta') {
+            if (e.key === 'Control' || e.key === 'Meta' || e.ctrlKey || e.metaKey) {
                 isCtrlDown = true;
             }
         });
         window.addEventListener('keyup', function(e) {
-            if (e.key === 'Control' || e.key === 'Meta') {
+            if (e.key === 'Control' || e.key === 'Meta' || (!e.ctrlKey && !e.metaKey)) {
                 isCtrlDown = false;
             }
         });
@@ -722,6 +722,13 @@ $events = array_map(function($act) use ($managedOrgIds) {
                 });
             }
 
+            // Prevent context menu from appearing on Mac when Ctrl + Clicking calendar cells
+            calendarEl.addEventListener('contextmenu', function(e) {
+                if (isCtrlDown || e.ctrlKey || e.metaKey) {
+                    e.preventDefault();
+                }
+            });
+
             var calendar = new FullCalendar.Calendar(calendarEl, {
                 initialView: 'dayGridMonth',
                 displayEventTime: false,
@@ -747,10 +754,11 @@ $events = array_map(function($act) use ($managedOrgIds) {
                         return e.startStr.split('T')[0] === clickedDateStr;
                     });
 
-                    // Use global isCtrlDown or native event properties
-                    var isCtrlPressed = isCtrlDown || info.jsEvent.ctrlKey || info.jsEvent.metaKey;
+                    // Comprehensive check for Ctrl/Cmd modifier across all browsers & platforms
+                    var isCtrlPressed = isCtrlDown || info.jsEvent.ctrlKey || info.jsEvent.metaKey || info.jsEvent.button === 2;
 
                     if (isCtrlPressed) {
+                        info.jsEvent.preventDefault();
                         if (isPast) return; // Disallow selecting past dates for new activities
 
                         var idx = selectedDates.indexOf(clickedDateStr);
