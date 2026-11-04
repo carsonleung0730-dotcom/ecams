@@ -65,6 +65,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         exit;
     }
 
+    if (!empty($tid)) {
+        $teacherCheck = $conn->prepare("SELECT 1 FROM users WHERE uid = ? AND role IN ('teacher', 'admin') LIMIT 1");
+        $teacherCheck->bind_param("s", $tid);
+        $teacherCheck->execute();
+        $teacherCheck->store_result();
+        $validTeacher = $teacherCheck->num_rows > 0;
+        $teacherCheck->close();
+
+        if (!$validTeacher) {
+            echo json_encode([
+                'success' => false,
+                'message' => 'Managing teacher UID must belong to a teacher or admin.'
+            ]);
+            exit;
+        }
+    }
+
     $chk = $conn->prepare("SELECT COUNT(*) FROM organisations WHERE oid = ?");
     $chk->bind_param("s", $oid);
     $chk->execute();
@@ -180,24 +197,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     try {
         $finalTid = empty($tid) ? null : $tid;
         if ($tid !== '') {
-    $teacherCheck = $conn->prepare(
-        "SELECT 1 FROM users WHERE uid = ? AND role IN ('teacher', 'admin') LIMIT 1"
-    );
-    $teacherCheck->bind_param("s", $tid);
-    $teacherCheck->execute();
-    $teacherCheck->store_result();
+            $teacherCheck = $conn->prepare(
+                "SELECT 1 FROM users WHERE uid = ? AND role IN ('teacher', 'admin') LIMIT 1"
+            );
+            $teacherCheck->bind_param("s", $tid);
+            $teacherCheck->execute();
+            $teacherCheck->store_result();
 
-    $validTeacher = $teacherCheck->num_rows > 0;
-    $teacherCheck->close();
+            $validTeacher = $teacherCheck->num_rows > 0;
+            $teacherCheck->close();
 
-    if (!$validTeacher) {
-        echo json_encode([
-            'success' => false,
-            'message' => 'Managing teacher UID must belong to a teacher or admin.'
-        ]);
-        exit;
-    }
-}
+            if (!$validTeacher) {
+                echo json_encode([
+                    'success' => false,
+                    'message' => 'Managing teacher UID must belong to a teacher or admin.'
+                ]);
+                exit;
+            }
+        }
         if ($oldOid !== $newOid) {
             $updMonOid = $conn->prepare("UPDATE monitor SET oid = ? WHERE oid = ?");
             $updMonOid->bind_param("ss", $newOid, $oldOid);
@@ -428,7 +445,7 @@ if ($orgRes) {
 
         .teacher-info { font-size: 0.85rem; color: #475569; text-align: left; margin-top: 0.4rem; position: relative; }
         .teacher-name-bold { font-weight: 700; color: #1e293b; font-size: 1.1rem; }
-        .teacher-input { width: 100%; padding: 6px 8px; font-size: 0.85rem; border: 1px solid #cbd5e1; border-radius: 4px; margin-top: 4px; background-color: #ffffff; color: #1e293b; display: none; }
+        .teacher-input { width: 100%; padding: 6px 8px; font-size: 0.85rem; border: 1px solid #cbd5e1; border-radius: 4px; margin-top: 4px; background-color: #ffffff; color: #1e293b; }
         .teacher-input:hover, .teacher-input:focus { outline: none; border-color: #2563eb; box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.15); }
         
         .custom-dropdown-list {
@@ -483,7 +500,6 @@ if ($orgRes) {
         body.editing-mode .delete-arrow-btn,
         body.editing-mode .btn-upload-file,
         body.editing-mode .org-title-edit,
-        body.editing-mode .teacher-input,
         body.editing-mode .member-search-input,
         body.editing-mode .members-view-edit,
         body.editing-mode .btn-save-org,
@@ -491,7 +507,6 @@ if ($orgRes) {
             display: flex !important;
         }
         body.editing-mode .org-title-display,
-        body.editing-mode .teacher-display,
         body.editing-mode .members-view-display {
             display: none !important;
         }
@@ -547,6 +562,14 @@ if ($orgRes) {
                 <?php if (!empty($orgsData)): ?>
                     <?php foreach ($orgsData as $org): 
                         $hasImage = !empty($org['image_path']);
+                        $currentTid = $org['tid'] ?? '';
+                        $currentTeacherLabel = 'Unassigned';
+                        foreach ($teachersList as $t) {
+                            if ($t['uid'] === $currentTid) {
+                                $currentTeacherLabel = "[" . htmlspecialchars($t['uid']) . "] " . htmlspecialchars($t['name']);
+                                break;
+                            }
+                        }
                     ?>
                         <div class="org-vertical-box existing-org-box <?= $hasImage ? 'has-image' : '' ?>" data-oid="<?= htmlspecialchars($org['oid']) ?>" data-original-name="<?= htmlspecialchars($org['oname']) ?>" data-original-tid="<?= htmlspecialchars($org['tid'] ?? '') ?>">
                             <img src="arrow.png" alt="Delete" class="delete-arrow-btn delete-org-trigger" title="Delete Organisation">
@@ -573,12 +596,11 @@ if ($orgRes) {
                                 </div>
 
                                 <div class="teacher-info">
-                                    <div class="teacher-display" style="text-align: center;">
-                                        Teacher: <span class="teacher-name-bold"><?= htmlspecialchars($org['teacher_name'] ?? 'Unassigned') ?></span>
-                                    </div>
-                                    <div class="teacher-edit" style="margin-top: 4px; position: relative;">
-                                        <input type="text" class="teacher-input edit-tid" value="<?= htmlspecialchars($org['tid'] ?? '') ?>" placeholder="Select or type teacher UID/name" autocomplete="off">
+                                    <div style="margin-bottom: 2px; font-weight: 700; color: #475569;">Teacher Managing:</div>
+                                    <div style="position: relative;">
+                                        <input type="text" class="teacher-input edit-tid" value="<?= $currentTid ? htmlspecialchars($currentTid) : '' ?>" placeholder="Select or type teacher UID/name" autocomplete="off">
                                         <div class="custom-dropdown-list edit-teacher-dropdown">
+                                            <div class="custom-dropdown-item" data-uid="" data-name="Unassigned">[Unassigned] None</div>
                                             <?php foreach ($teachersList as $t): ?>
                                                 <div class="custom-dropdown-item" data-uid="<?= htmlspecialchars($t['uid']) ?>" data-name="<?= htmlspecialchars($t['name']) ?>">
                                                     [<?= htmlspecialchars($t['uid']) ?>] <?= htmlspecialchars($t['name']) ?>
@@ -617,31 +639,30 @@ if ($orgRes) {
                             </div>
 
                             <div class="members-table-wrapper checklist-container members-view-edit" style="display: none;">
-    <input type="text" class="member-search-input" placeholder="Search student (ID, Name, Class)...">
-    <div class="checklist-items-scroll">
-        <?php 
-        $memberUids = array_column($org['members'], 'uid');
-        foreach ($studentsList as $s): 
-            $isMem = in_array($s['uid'], $memberUids);
-            $isMon = in_array($s['uid'], $org['monitors']);
-            $stateClass = '';
-            if ($isMon) $stateClass = 'state-monitor';
-            else if ($isMem) $stateClass = 'state-member';
+                                <input type="text" class="member-search-input" placeholder="Search student (ID, Name, Class)...">
+                                <div class="checklist-items-scroll">
+                                    <?php 
+                                    $memberUids = array_column($org['members'], 'uid');
+                                    foreach ($studentsList as $s): 
+                                        $isMem = in_array($s['uid'], $memberUids);
+                                        $isMon = in_array($s['uid'], $org['monitors']);
+                                        $stateClass = '';
+                                        if ($isMon) $stateClass = 'state-monitor';
+                                        else if ($isMem) $stateClass = 'state-member';
 
-            // Support either 'class_number' or 'cid' safely
-            $sClass = $s['class'] ?? '';
-            $sNum = $s['class_number'] ?? $s['cid'] ?? '';
-            $sCombined = $sClass . $sNum; // e.g. "1A" + "21" = "1a21"
-            
-            $searchString = strtolower(trim("{$s['uid']} {$s['name']} {$sClass} {$sNum} {$sCombined}"));
-        ?>
-            <div class="checklist-item <?= $stateClass ?>" data-search="<?= htmlspecialchars($searchString) ?>" data-uid="<?= htmlspecialchars($s['uid']) ?>">
-                <span class="state-box"></span>
-                <span>[<?= htmlspecialchars($s['uid']) ?>] <?= htmlspecialchars($s['name']) ?><?= $sClass ? " ($sClass-$sNum)" : "" ?></span>
-            </div>
-        <?php endforeach; ?>
-    </div>
-</div>
+                                        $sClass = $s['class'] ?? '';
+                                        $sNum = $s['class_number'] ?? $s['cid'] ?? '';
+                                        $sCombined = $sClass . $sNum; 
+                                        
+                                        $searchString = strtolower(trim("{$s['uid']} {$s['name']} {$sClass} {$sNum} {$sCombined}"));
+                                    ?>
+                                        <div class="checklist-item <?= $stateClass ?>" data-search="<?= htmlspecialchars($searchString) ?>" data-uid="<?= htmlspecialchars($s['uid']) ?>">
+                                            <span class="state-box"></span>
+                                            <span>[<?= htmlspecialchars($s['uid']) ?>] <?= htmlspecialchars($s['name']) ?><?= $sClass ? " ($sClass-$sNum)" : "" ?></span>
+                                        </div>
+                                    <?php endforeach; ?>
+                                </div>
+                            </div>
                         </div>
                     <?php endforeach; ?>
                 <?php endif; ?>
@@ -662,18 +683,21 @@ if ($orgRes) {
 
                         <div class="teacher-info">
                             <div style="margin-bottom: 2px; font-weight: 700; color: #475569;">Teacher Managing:</div>
-                            <input type="text" id="newOrgTeacher" class="teacher-input" placeholder="Select or type teacher UID/name" autocomplete="off" style="display: block;">
-                            <div id="customTeacherDropdown" class="custom-dropdown-list">
-                                <?php foreach ($teachersList as $t): ?>
-                                    <div class="custom-dropdown-item" data-uid="<?= htmlspecialchars($t['uid']) ?>" data-name="<?= htmlspecialchars($t['name']) ?>">
-                                        [<?= htmlspecialchars($t['uid']) ?>] <?= htmlspecialchars($t['name']) ?>
-                                    </div>
-                                <?php endforeach; ?>
+                            <div style="position: relative;">
+                                <input type="text" id="newOrgTeacher" class="teacher-input" placeholder="Select or type teacher UID/name" autocomplete="off">
+                                <div id="customTeacherDropdown" class="custom-dropdown-list">
+                                    <div class="custom-dropdown-item" data-uid="" data-name="Unassigned">[Unassigned] None</div>
+                                    <?php foreach ($teachersList as $t): ?>
+                                        <div class="custom-dropdown-item" data-uid="<?= htmlspecialchars($t['uid']) ?>" data-name="<?= htmlspecialchars($t['name']) ?>">
+                                            [<?= htmlspecialchars($t['uid']) ?>] <?= htmlspecialchars($t['name']) ?>
+                                        </div>
+                                    <?php endforeach; ?>
+                                </div>
                             </div>
                         </div>
                     </div>
 
-                    <div class="members-section-title">Members &amp; Monitors Checklist:</div>
+                    <div class="members-section-title">Members & Monitors Checklist:</div>
                     <input type="text" id="memberSearch" class="member-search-input" placeholder="Search UID or name..." style="display: block;">
                     <div class="members-table-wrapper checklist-container" id="membersChecklistContainer">
                         <div class="checklist-items-scroll">
