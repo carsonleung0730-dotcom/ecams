@@ -580,7 +580,8 @@ $events = array_map(function($act) use ($managedOrgIds) {
 
                         <div class="field-group">
                             <label for="field_date">Date(s) (date)</label>
-                            <input type="text" id="field_date" name="date" placeholder="YYYY-MM-DD or multiple dates">
+                            <!-- Date field made readonly so users select dates via calendar -->
+                            <input type="text" id="field_date" name="date" placeholder="Select from calendar" readonly>
                         </div>
 
                         <div class="field-group">
@@ -627,6 +628,19 @@ $events = array_map(function($act) use ($managedOrgIds) {
         }
         updateClock();
         setInterval(updateClock, 1000);
+
+        // Global keyboard tracker for Ctrl/Cmd key multi-selection
+        let isCtrlDown = false;
+        window.addEventListener('keydown', function(e) {
+            if (e.key === 'Control' || e.key === 'Meta') {
+                isCtrlDown = true;
+            }
+        });
+        window.addEventListener('keyup', function(e) {
+            if (e.key === 'Control' || e.key === 'Meta') {
+                isCtrlDown = false;
+            }
+        });
 
         document.addEventListener('DOMContentLoaded', function() {
             var calendarEl = document.getElementById('ecams-calendar');
@@ -733,7 +747,8 @@ $events = array_map(function($act) use ($managedOrgIds) {
                         return e.startStr.split('T')[0] === clickedDateStr;
                     });
 
-                    var isCtrlPressed = info.jsEvent.ctrlKey || info.jsEvent.metaKey;
+                    // Use global isCtrlDown or native event properties
+                    var isCtrlPressed = isCtrlDown || info.jsEvent.ctrlKey || info.jsEvent.metaKey;
 
                     if (isCtrlPressed) {
                         if (isPast) return; // Disallow selecting past dates for new activities
@@ -936,7 +951,6 @@ $events = array_map(function($act) use ($managedOrgIds) {
                 document.getElementById('field_aid').value = initialActivityData.aid;
                 
                 var oidSelect = document.getElementById('field_oid');
-                // Clean up any previously appended dynamic options
                 Array.from(oidSelect.options).forEach(function(opt) {
                     if (opt.getAttribute('data-dynamic') === 'true') {
                         opt.remove();
@@ -993,8 +1007,8 @@ $events = array_map(function($act) use ($managedOrgIds) {
 
                 formInputs.forEach(inp => inp.disabled = false);
                 document.getElementById('field_aid').disabled = true;
+                document.getElementById('field_date').readOnly = true; // ensure date field is view-only
 
-                // Clean up any dynamic non-managed organization options from previous view
                 var oidSelect = document.getElementById('field_oid');
                 Array.from(oidSelect.options).forEach(function(opt) {
                     if (opt.getAttribute('data-dynamic') === 'true') {
