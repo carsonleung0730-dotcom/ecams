@@ -1,8 +1,6 @@
 <?php
-
 require_once 'db.php';
 session_start();
-
 
 if (!isset($_SESSION['role']) || strtolower($_SESSION['role']) !== 'student') {
     header('Location: unauthorized.php');
@@ -16,48 +14,104 @@ if (!isset($_SESSION['uid']) && !isset($_SESSION['user_id'])) {
 
 $studentUid = $_SESSION['uid'] ?? $_SESSION['user_id'] ?? $_SESSION['id'] ?? 2;
 
+// Handle join request submission via AJAX POST
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'request_join') {
+    header('Content-Type: application/json');
+    $oid = trim($_POST['oid'] ?? '');
+    $reason = trim($_POST['reason'] ?? '');
+
+    if (empty($oid)) {
+        echo json_encode(['success' => false, 'message' => 'Organization ID is required.']);
+        exit;
+    }
+
+    // Check if already a member
+    $chkMem = $conn->prepare("SELECT COUNT(*) FROM membership WHERE oid = ? AND sid = ?");
+    $chkMem->bind_param("ss", $oid, $studentUid);
+    $chkMem->execute();
+    $chkMem->bind_result($memCount);
+    $chkMem->fetch();
+    $chkMem->close();
+
+    if ($memCount > 0) {
+        echo json_encode(['success' => false, 'message' => 'You are already a member of this organisation.']);
+        exit;
+    }
+
+    // Check if a pending request already exists
+    $chkReq = $conn->prepare("SELECT COUNT(*) FROM join_requests WHERE oid = ? AND sid = ? AND status = 'pending'");
+    $chkReq->bind_param("ss", $oid, $studentUid);
+    $chkReq->execute();
+    $chkReq->bind_result($reqCount);
+    $chkReq->fetch();
+    $chkReq->close();
+
+    if ($reqCount > 0) {
+        echo json_encode(['success' => false, 'message' => 'You already have a pending request for this organisation.']);
+        exit;
+    }
+
+    // Insert join request (Ensure your database has a join_requests table: id, oid, sid, reason, status, created_at)
+    $ins = $conn->prepare("INSERT INTO join_requests (oid, sid, reason, status) VALUES (?, ?, ?, 'pending')");
+    if ($ins) {
+        $ins->bind_param("sss", $oid, $studentUid, $reason);
+        if ($ins->execute()) {
+            echo json_encode(['success' => true]);
+        } else {
+            echo json_encode(['success' => false, 'message' => 'Failed to submit request.']);
+        }
+        $ins->close();
+    } else {
+        echo json_encode(['success' => false, 'message' => 'Database statement preparation failed. (Make sure join_requests table exists).']);
+    }
+    exit;
+}
+
 $orgsData = [];
 if (isset($conn) && $conn instanceof mysqli) {
     try {
-        // Fetch organizations where the logged-in student is a member, along with the designated monitor
-        $orgStmt = $conn->prepare("
+        // Fetch all organizations, marking whether the logged-in student is a member
+        $orgRes = $conn->query("
             SELECT o.oid, o.oname, o.tid, 
                    (SELECT mid FROM monitor WHERE oid = o.oid LIMIT 1) AS monitor_uid, 
-                   u.name AS teacher_name
-            FROM membership m
-            JOIN organisations o ON m.oid = o.oid
+                   u.name AS teacher_name,
+                   (SELECT COUNT(*) FROM membership WHERE oid = o.oid AND sid = '$studentUid') AS is_member
+            FROM organisations o
             LEFT JOIN users u ON o.tid = u.uid
-            WHERE m.sid = ?
-            ORDER BY o.oid ASC
+            ORDER BY is_member DESC, o.oid ASC
         ");
-        $orgStmt->bind_param("s", $studentUid);
-        $orgStmt->execute();
-        $orgRes = $orgStmt->get_result();
-        $orgsRaw = $orgRes->fetch_all(MYSQLI_ASSOC);
-        $orgStmt->close();
+        
+        if ($orgRes) {
+            $orgsRaw = $orgRes->fetch_all(MYSQLI_ASSOC);
 
-        foreach ($orgsRaw as $org) {
-            $monitorUid = $org['monitor_uid'] ?? '';
+            foreach ($orgsRaw as $org) {
+                $monitorUid = $org['monitor_uid'] ?? '';
+                $isMember = ($org['is_member'] > 0);
 
-            // Fetch members and place the monitor at the top
-            $memStmt = $conn->prepare("
-                SELECT u.uid, u.name 
-                FROM membership m
-                JOIN users u ON m.sid = u.uid
-                WHERE m.oid = ?
-                ORDER BY CASE WHEN u.uid = ? THEN 0 ELSE 1 END, CAST(u.uid AS UNSIGNED) ASC, u.uid ASC
-            ");
-            $memStmt->bind_param("ss", $org['oid'], $monitorUid);
-            $memStmt->execute();
-            $memRes = $memStmt->get_result();
-            $org['members'] = $memRes->fetch_all(MYSQLI_ASSOC);
-            $memStmt->close();
+                if ($isMember) {
+                    // Fetch members and place the monitor at the top if member
+                    $memStmt = $conn->prepare("
+                        SELECT u.uid, u.name 
+                        FROM membership m
+                        JOIN users u ON m.sid = u.uid
+                        WHERE m.oid = ?
+                        ORDER BY CASE WHEN u.uid = ? THEN 0 ELSE 1 END, CAST(u.uid AS UNSIGNED) ASC, u.uid ASC
+                    ");
+                    $memStmt->bind_param("ss", $org['oid'], $monitorUid);
+                    $memStmt->execute();
+                    $memRes = $memStmt->get_result();
+                    $org['members'] = $memRes->fetch_all(MYSQLI_ASSOC);
+                    $memStmt->close();
+                } else {
+                    $org['members'] = [];
+                }
 
-            $safeOid = preg_replace('/[^a-zA-Z0-9_-]/', '_', $org['oid']);
-            $existingImg = "uploads/org_{$safeOid}.png";
-            $org['image_path'] = file_exists($existingImg) ? $existingImg : '';
-            
-            $orgsData[] = $org;
+                $safeOid = preg_replace('/[^a-zA-Z0-9_-]/', '_', $org['oid']);
+                $existingImg = "uploads/org_{$safeOid}.png";
+                $org['image_path'] = file_exists($existingImg) ? $existingImg . '?t=' . filemtime($existingImg) : '';
+                
+                $orgsData[] = $org;
+            }
         }
     } catch (Exception $e) {
         $orgsData = [];
@@ -124,6 +178,21 @@ if (isset($conn) && $conn instanceof mysqli) {
         
         main { flex: 1; padding: 1rem 2rem; background-color: #d6e6f9; overflow-x: auto; overflow-y: hidden; padding-top: 1rem; height: 100%; position: relative; }
         
+        .floating-controls {
+            position: fixed; top: 115px; left: 280px; right: 0; z-index: 1000;
+            display: flex; gap: 6px; align-items: center; justify-content: center; pointer-events: none;
+        }
+        .filter-managed-btn {
+            background: #ffffff; border: 1px solid #cbd5e1; padding: 4px 10px; border-radius: 4px;
+            font-size: 0.75rem; font-weight: 700; cursor: pointer; box-shadow: 0 2px 4px rgba(0,0,0,0.08);
+            user-select: none; pointer-events: auto; transition: background-color 0.2s ease;
+        }
+        .filter-managed-btn.filter-active {
+            background-color: #0284c7;
+            color: #ffffff;
+            border-color: #0369a1;
+        }
+
         .orgs-horizontal-container { display: flex; gap: 1.5rem; height: 100%; align-items: flex-start; width: max-content; padding-bottom: 1rem; margin-top: 1.267rem; }
         
         .org-vertical-box {
@@ -155,6 +224,12 @@ if (isset($conn) && $conn instanceof mysqli) {
         .members-table td { padding: 4px 8px; font-size: 0.85rem; color: #1e293b; border-bottom: 1px solid #f1f5f9; }
         
         .monitor-row td { font-weight: bold; color: #0f172a; }
+
+        .join-request-section { flex: 1; display: flex; flex-direction: column; gap: 8px; background: #f8fafc; padding: 10px; border-radius: 8px; border: 1px solid #cbd5e1; }
+        .join-textarea { width: 100%; flex: 1; resize: none; padding: 8px; font-size: 0.85rem; border: 1px solid #cbd5e1; border-radius: 6px; background: #ffffff; color: #1e293b; outline: none; }
+        .join-textarea:focus { border-color: #2563eb; box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.15); }
+        .btn-request-join { width: 100%; background-color: #2563eb; color: #ffffff; border: none; padding: 8px; border-radius: 6px; font-weight: 700; cursor: pointer; }
+        .btn-request-join:hover { background-color: #1d4ed8; }
     </style>
 </head>
 <body>
@@ -180,7 +255,7 @@ if (isset($conn) && $conn instanceof mysqli) {
 
     <div class="app-body">
         <aside class="side-panel">
-            <a href="student.php" class="nav-btn nav-btn-org is-active" id="navBtnOrg">
+            <a href="s-org.php" class="nav-btn nav-btn-org is-active" id="navBtnOrg">
                 <img src="org.png" alt="Organization" class="btn-icon">
             </a>
             <a href="s-activity.php" class="nav-btn nav-btn-activity">
@@ -189,13 +264,18 @@ if (isset($conn) && $conn instanceof mysqli) {
         </aside>
 
         <main id="mainContainer">
+            <div class="floating-controls">
+                <div class="control-box filter-managed-btn filter-active" id="filterManagedBtn">Show All Organisations</div>
+            </div>
+
             <div class="orgs-horizontal-container">
                 <?php if (!empty($orgsData)): ?>
                     <?php foreach ($orgsData as $org): 
                         $hasImage = !empty($org['image_path']);
                         $monitorUid = $org['monitor_uid'] ?? '';
+                        $isMember = ($org['is_member'] > 0);
                     ?>
-                        <div class="org-vertical-box" data-oid="<?= htmlspecialchars($org['oid']) ?>">
+                        <div class="org-vertical-box" data-oid="<?= htmlspecialchars($org['oid']) ?>" data-is-member="<?= $isMember ? 'true' : 'false' ?>" style="<?= $isMember ? '' : 'display: none;' ?>">
                             <div class="org-header-section">
                                 <div class="org-title-row">
                                     <div class="org-title" title="<?= htmlspecialchars($org['oname']) ?>"><?= htmlspecialchars($org['oid']) ?> - <?= htmlspecialchars($org['oname']) ?></div>
@@ -212,36 +292,43 @@ if (isset($conn) && $conn instanceof mysqli) {
                                 </div>
                             </div>
 
-                            <div class="members-section-title"><?= count($org['members']) ?> Members</div>
-                            
-                            <div class="members-table-wrapper">
-                                <?php if (!empty($org['members'])): ?>
-                                    <table class="members-table">
-                                        <thead>
-                                            <tr>
-                                                <th>UID</th>
-                                                <th>Name</th>
-                                            </tr>
-                                        </thead>
-                                        <tbody>
-                                            <?php foreach ($org['members'] as $member): 
-                                                $isMonitor = ($member['uid'] == $monitorUid);
-                                            ?>
-                                                <tr class="<?= $isMonitor ? 'monitor-row' : '' ?>">
-                                                    <td><?= htmlspecialchars($member['uid']) ?></td>
-                                                    <td><?= htmlspecialchars($member['name']) ?></td>
+                            <?php if ($isMember): ?>
+                                <div class="members-section-title"><?= count($org['members']) ?> Members</div>
+                                <div class="members-table-wrapper">
+                                    <?php if (!empty($org['members'])): ?>
+                                        <table class="members-table">
+                                            <thead>
+                                                <tr>
+                                                    <th>UID</th>
+                                                    <th>Name</th>
                                                 </tr>
-                                            <?php endforeach; ?>
-                                        </tbody>
-                                    </table>
-                                <?php else: ?>
-                                    <div class="no-members" style="padding: 10px; font-size: 0.85rem; color: #64748b;">No members enrolled</div>
-                                <?php endif; ?>
-                            </div>
+                                            </thead>
+                                            <tbody>
+                                                <?php foreach ($org['members'] as $member): 
+                                                    $isMonitor = ($member['uid'] == $monitorUid);
+                                                ?>
+                                                    <tr class="<?= $isMonitor ? 'monitor-row' : '' ?>">
+                                                        <td><?= htmlspecialchars($member['uid']) ?></td>
+                                                        <td><?= htmlspecialchars($member['name']) ?></td>
+                                                    </tr>
+                                                <?php endforeach; ?>
+                                            </tbody>
+                                        </table>
+                                    <?php else: ?>
+                                        <div class="no-members" style="padding: 10px; font-size: 0.85rem; color: #64748b;">No members enrolled</div>
+                                    <?php endif; ?>
+                                </div>
+                            <?php else: ?>
+                                <div class="members-section-title">Request to Join</div>
+                                <div class="join-request-section">
+                                    <textarea class="join-textarea" placeholder="Type your reason for joining..."></textarea>
+                                    <button type="button" class="btn-request-join submit-join-btn">Request to Join</button>
+                                </div>
+                            <?php endif; ?>
                         </div>
                     <?php endforeach; ?>
                 <?php else: ?>
-                    <div style="padding: 2rem; font-size: 1rem; color: #1e293b;">You are not currently enrolled in any organisations.</div>
+                    <div style="padding: 2rem; font-size: 1rem; color: #1e293b;">No organisations found.</div>
                 <?php endif; ?>
             </div>
         </main>
@@ -285,7 +372,7 @@ if (isset($conn) && $conn instanceof mysqli) {
 
         function updateBoxColorsOnScroll() {
             if (!mainContainer) return;
-            const boxes = mainContainer.querySelectorAll('.org-vertical-box');
+            const boxes = Array.from(mainContainer.querySelectorAll('.org-vertical-box')).filter(b => b.style.display !== 'none');
             const containerWidth = mainContainer.clientWidth;
 
             boxes.forEach((box) => {
@@ -315,6 +402,63 @@ if (isset($conn) && $conn instanceof mysqli) {
             window.addEventListener('resize', updateBoxColorsOnScroll);
             window.addEventListener('DOMContentLoaded', updateBoxColorsOnScroll);
         }
+
+        let showAllOrgs = false;
+        const filterManagedBtn = document.getElementById('filterManagedBtn');
+
+        filterManagedBtn.addEventListener('click', function() {
+            showAllOrgs = !showAllOrgs;
+            if (showAllOrgs) {
+                filterManagedBtn.classList.remove('filter-active');
+                filterManagedBtn.textContent = 'Only Show My Organisations';
+            } else {
+                filterManagedBtn.classList.add('filter-active');
+                filterManagedBtn.textContent = 'Show All Organisations';
+            }
+
+            document.querySelectorAll('.org-vertical-box').forEach(box => {
+                const isMember = box.getAttribute('data-is-member') === 'true';
+                if (!showAllOrgs && !isMember) {
+                    box.style.display = 'none';
+                } else {
+                    box.style.display = 'flex';
+                }
+            });
+            updateBoxColorsOnScroll();
+        });
+
+        // Submit Join Request Action
+        document.addEventListener('click', function(e) {
+            if (e.target.classList.contains('submit-join-btn')) {
+                const box = e.target.closest('.org-vertical-box');
+                const oid = box.getAttribute('data-oid');
+                const reason = box.querySelector('.join-textarea').value.trim();
+
+                if (!reason) {
+                    alert('Please enter a reason for joining.');
+                    return;
+                }
+
+                const formData = new FormData();
+                formData.append('action', 'request_join');
+                formData.append('oid', oid);
+                formData.append('reason', reason);
+
+                fetch('', { method: 'POST', body: formData })
+                .then(res => res.json())
+                .then(data => {
+                    if (data.success) {
+                        alert('Join request submitted successfully!');
+                        box.querySelector('.join-textarea').value = '';
+                    } else {
+                        alert('Error: ' + data.message);
+                    }
+                })
+                .catch(err => {
+                    alert('Failed to submit join request.');
+                });
+            }
+        });
     </script>
 </body>
 </html>
