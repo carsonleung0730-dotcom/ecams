@@ -56,7 +56,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     header('Content-Type: application/json');
     $oid = trim($_POST['oid'] ?? '');
     $oname = trim($_POST['oname'] ?? '');
-    $tid = trim($_POST['tid'] ?? null);
+    $tid = trim($_POST['tid'] ?? '');
     $members = $_POST['members'] ?? [];
     $monitors = $_POST['monitors'] ?? [];
 
@@ -179,6 +179,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     $conn->begin_transaction();
     try {
         $finalTid = empty($tid) ? null : $tid;
+        if ($tid !== '') {
+    $teacherCheck = $conn->prepare(
+        "SELECT 1 FROM users WHERE uid = ? AND role IN ('teacher', 'admin') LIMIT 1"
+    );
+    $teacherCheck->bind_param("s", $tid);
+    $teacherCheck->execute();
+    $teacherCheck->store_result();
+
+    $validTeacher = $teacherCheck->num_rows > 0;
+    $teacherCheck->close();
+
+    if (!$validTeacher) {
+        echo json_encode([
+            'success' => false,
+            'message' => 'Managing teacher UID must belong to a teacher or admin.'
+        ]);
+        exit;
+    }
+}
         if ($oldOid !== $newOid) {
             $updMonOid = $conn->prepare("UPDATE monitor SET oid = ? WHERE oid = ?");
             $updMonOid->bind_param("ss", $newOid, $oldOid);
