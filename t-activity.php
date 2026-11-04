@@ -1221,7 +1221,7 @@ $events = array_map(function($act) use ($managedOrgIds) {
                     formData.append('timeslot', document.getElementById('field_timeslot').value);
                 }
 
-                fetch('teacher.php', {
+                fetch('t-activity.php', {
                     method: 'POST',
                     body: formData
                 })
