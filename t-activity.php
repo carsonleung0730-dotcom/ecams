@@ -73,7 +73,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         }
 
         $stmt = $conn->prepare("UPDATE activity SET oid = ?, aname = ?, date = ?, room = ?, timeslot = ? WHERE aid = ?");
-        $stmt->bind_param("sssisi", $oid, $aname, $date, $room, $timeslot, $aid);
+        $stmt->bind_param("issisi", $oid, $aname, $date, $room, $timeslot, $aid);
         if ($stmt->execute()) {
             echo json_encode(['status' => 'success']);
         } else {
@@ -120,7 +120,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         try {
             $createdAids = [];
             $stmt = $conn->prepare("INSERT INTO activity (oid, aname, date, room, timeslot) VALUES (?, ?, ?, ?, ?)");
-            $stmt->bind_param("sssis", $oid, $aname, $date, $room, $timeslot);
+            
             $memStmt = $conn->prepare("SELECT sid FROM membership WHERE oid = ?");
             $memStmt->bind_param("i", $oid);
             $memStmt->execute();
@@ -131,7 +131,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             $attStmt = $conn->prepare("INSERT INTO attendance (aid, sid, attend, rate, `s.rate`) VALUES (?, ?, 0, 10, 10)");
 
             foreach ($dates as $date) {
-                $stmt->bind_param("sssis", $oid, $aname, $date, $room, $timeslot);
+                // Corrected types: i (int oid), s (string aname), s (string date), i (int room), s (string timeslot)
+                $stmt->bind_param("issis", $oid, $aname, $date, $room, $timeslot);
                 $stmt->execute();
                 $newAid = $stmt->insert_id;
                 $createdAids[] = [
@@ -550,7 +551,7 @@ $events = array_map(function($act) use ($managedOrgIds) {
                     <span class="tab-separator" id="tabSeparator">|</span>
                     <button type="button" class="tab-btn" id="tabCreate">Create new</button>
                 </div>
-                <button class="close-btn" id="closePanelBtn">&times;</button>
+                <button class="close-btn" id="closePanelBtn">×</button>
             </div>
             
             <div class="panel-body-content">
@@ -559,7 +560,7 @@ $events = array_map(function($act) use ($managedOrgIds) {
                 </div>
 
                 <div id="activityFormView" style="display: none;">
-                    <button type="button" class="btn-return-back" id="returnBackBtn" style="display: none;">&larr; Back</button>
+                    <button type="button" class="btn-return-back" id="returnBackBtn" style="display: none;">← Back</button>
 
                     <form id="activityForm">
                         <div class="field-group">
@@ -1116,7 +1117,6 @@ $events = array_map(function($act) use ($managedOrgIds) {
                 activitiesListView.style.display = 'block';
                 calendarEl.classList.remove('calendar-active-mode-blue');
                 calendarEl.classList.add('calendar-active-mode-red');
-                // Strict single date enforcement when returning back to modify/view mode
                 if (selectedDates.length > 1) {
                     selectedDates = [selectedDates[0]];
                     renderDateChips();
@@ -1128,7 +1128,6 @@ $events = array_map(function($act) use ($managedOrgIds) {
                 calendarEl.classList.remove('calendar-active-mode-blue');
                 calendarEl.classList.add('calendar-active-mode-red');
                 
-                // CRITICAL FIX: Restrict selected dates strictly to 1 when switching back to Existing Activities
                 if (selectedDates.length > 1) {
                     selectedDates = [currentSelectedDate || selectedDates[0]];
                 }
@@ -1226,11 +1225,7 @@ $events = array_map(function($act) use ($managedOrgIds) {
                     method: 'POST',
                     body: formData
                 })
-                .then(response => response.text()) // Change from response.json() to response.text()
-                .then(text => {
-                console.log("RAW SERVER RESPONSE:", text); // Check your F12 Console for this!
-                return JSON.parse(text); // Try parsing manually
-                })
+                .then(response => response.json())
                 .then(data => {
                     if (data.status === 'success') {
                         if (currentMode === 'delete') {
