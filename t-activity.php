@@ -319,21 +319,19 @@ $events = array_map(function($act) use ($managedOrgIds) {
 
         .fc-daygrid-day.has-event:hover { outline: 4px double #e99090 !important; outline-offset: -4px; }
 
-        /* Pure clean selection highlights without heatmap spreading */
+        /* Modify mode: Red highlighting */
+        .calendar-active-mode-red .fc-daygrid-day.multi-selected:not(.fc-day-past) { background-color: #ea580c !important; }
+        .calendar-active-mode-red .fc-daygrid-day.multi-selected:not(.fc-day-past) .fc-daygrid-day-number { color: #ffffff !important; font-weight: 700; }
+
+        /* Create mode: Blue highlighting */
         .calendar-active-mode-blue .fc-daygrid-day.multi-selected:not(.fc-day-past) { background-color: #0284c7 !important; }
         .calendar-active-mode-blue .fc-daygrid-day.multi-selected:not(.fc-day-past) .fc-daygrid-day-number { color: #ffffff !important; font-weight: 700; }
 
-        .calendar-active-mode-blue .fc-daygrid-day.has-event:not(.fc-day-past) {
+        .fc-daygrid-day.has-event:not(.multi-selected):not(.fc-day-past) {
             background-color: #fecdd3 !important;
-            z-index: 4 !important;
         }
-        .calendar-active-mode-blue .fc-daygrid-day.has-event.multi-selected:not(.fc-day-past) {
-            background-color: #0284c7 !important;
+        .fc-daygrid-day.has-event.multi-selected:not(.fc-day-past) {
             z-index: 4 !important;
-        }
-        .calendar-active-mode-blue .fc-daygrid-day.has-event.multi-selected:not(.fc-day-past) .fc-daygrid-day-number {
-            color: #ffffff !important;
-            font-weight: 700 !important;
         }
 
         .app-body { flex: 1; display: flex; height: calc(100vh - 110px); position: relative; overflow: hidden; }
@@ -688,7 +686,7 @@ $events = array_map(function($act) use ($managedOrgIds) {
                 document.querySelectorAll('.fc-daygrid-day').forEach(function(dayEl) {
                     dayEl.classList.remove('multi-selected');
                 });
-                calendarEl.classList.remove('calendar-active-mode-blue');
+                calendarEl.classList.remove('calendar-active-mode-blue', 'calendar-active-mode-red');
                 selectedDates = [];
                 currentSelectedDate = null;
                 renderDateChips();
@@ -782,6 +780,7 @@ $events = array_map(function($act) use ($managedOrgIds) {
                     openActivityPanelForCreate(val);
                 } else {
                     renderDateChips();
+                    calendarEl.classList.remove('calendar-active-mode-red');
                     calendarEl.classList.add('calendar-active-mode-blue');
                     updateSelectionHighlight();
                 }
@@ -811,25 +810,15 @@ $events = array_map(function($act) use ($managedOrgIds) {
                         return e.startStr.split('T')[0] === clickedDateStr;
                     });
 
-                    // Check if panel is already open for this exact date (double click toggle to close)
-                    if (panel.classList.contains('active') && currentSelectedDate === clickedDateStr && currentDayActivities.length > 0 && currentMode === 'modify') {
+                    // 1. Double click / tap toggle: if clicking the exact same active selection, close panel
+                    if (panel.classList.contains('active') && currentSelectedDate === clickedDateStr) {
                         closeRightPanel();
                         return;
                     }
 
                     currentSelectedDate = clickedDateStr;
 
-                    if (currentDayActivities.length > 0) {
-                        unselectCalendarDate();
-                        selectedDates = [clickedDateStr];
-                        renderDateChips();
-                        openPanelWithActivityList(currentDayActivities);
-                        return;
-                    }
-
-                    if (isPast) return;
-
-                    // If we are currently in create mode, allow toggling date selection via calendar clicks
+                    // 2. If in Create New mode, clicking any date toggles it blue and adds/removes it from date chips
                     if (panel.classList.contains('active') && currentMode === 'create') {
                         var idx = selectedDates.indexOf(clickedDateStr);
                         if (idx > -1) {
@@ -843,17 +832,32 @@ $events = array_map(function($act) use ($managedOrgIds) {
                             return;
                         }
 
+                        calendarEl.classList.remove('calendar-active-mode-red');
                         calendarEl.classList.add('calendar-active-mode-blue');
                         updateSelectionHighlight();
                         renderDateChips();
-                    } else {
-                        // Single click empty date opens create panel with that date
-                        unselectCalendarDate();
-                        selectedDates = [clickedDateStr];
-                        calendarEl.classList.add('calendar-active-mode-blue');
-                        updateSelectionHighlight();
-                        openActivityPanelForCreate(clickedDateStr);
+                        return;
                     }
+
+                    // 3. If date has activities and we are not in create mode -> open modify mode (Red)
+                    if (currentDayActivities.length > 0) {
+                        calendarEl.classList.remove('calendar-active-mode-blue');
+                        calendarEl.classList.add('calendar-active-mode-red');
+                        selectedDates = [clickedDateStr];
+                        updateSelectionHighlight();
+                        renderDateChips();
+                        openPanelWithActivityList(currentDayActivities);
+                        return;
+                    }
+
+                    if (isPast) return;
+
+                    // 4. Normal empty date click -> open Create New panel (Blue)
+                    calendarEl.classList.remove('calendar-active-mode-red');
+                    calendarEl.classList.add('calendar-active-mode-blue');
+                    selectedDates = [clickedDateStr];
+                    updateSelectionHighlight();
+                    openActivityPanelForCreate(clickedDateStr);
                 },
 
                 eventClick: function(info) {
@@ -861,15 +865,18 @@ $events = array_map(function($act) use ($managedOrgIds) {
                     var todayStr = getTodayDateStr();
                     var isPast = eventDateStr < todayStr;
 
-                    if (panel.classList.contains('active') && currentSelectedDate === eventDateStr && currentMode === 'modify') {
+                    if (panel.classList.contains('active') && currentSelectedDate === eventDateStr) {
                         closeRightPanel();
                         return;
                     }
 
-                    unselectCalendarDate();
+                    calendarEl.classList.remove('calendar-active-mode-blue');
+                    calendarEl.classList.add('calendar-active-mode-red');
                     selectedDates = [eventDateStr];
                     currentSelectedDate = eventDateStr;
+                    updateSelectionHighlight();
                     renderDateChips();
+
                     currentDayActivities = calendar.getEvents().filter(function(e) {
                         return e.startStr.split('T')[0] === currentSelectedDate;
                     });
@@ -1083,6 +1090,7 @@ $events = array_map(function($act) use ($managedOrgIds) {
                     selectedDates = [currentSelectedDate];
                 }
 
+                calendarEl.classList.remove('calendar-active-mode-red');
                 calendarEl.classList.add('calendar-active-mode-blue');
                 renderDateChips();
                 updateSelectionHighlight();
