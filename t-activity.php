@@ -745,37 +745,38 @@ $events = array_map(function($act) use ($managedOrgIds) {
                 },
 
                 dateClick: function(info) {
-                    var clickedDateStr = info.dateStr;
-                    var todayStr = getTodayDateStr();
-                    var isPast = clickedDateStr < todayStr;
+    var clickedDateStr = info.dateStr;
+    var todayStr = getTodayDateStr();
+    var isPast = clickedDateStr < todayStr;
 
-                    currentDayActivities = calendar.getEvents().filter(function(e) {
-                        return e.startStr.split('T')[0] === clickedDateStr;
-                    });
+    if (isPast) return; // Prevent selecting past dates
 
-                    var isCtrlPressed = isCtrlDown || info.jsEvent.ctrlKey || info.jsEvent.metaKey || info.jsEvent.button === 2;
+    currentDayActivities = calendar.getEvents().filter(function(e) {
+        return e.startStr.split('T')[0] === clickedDateStr;
+    });
 
-                    if (isCtrlPressed) {
-                        info.jsEvent.preventDefault();
-                        if (isPast) return; // Disallow selecting past dates for new activities
+    // Toggle date in the selectedDates array
+    var idx = selectedDates.indexOf(clickedDateStr);
+    if (idx > -1) {
+        // Date is already selected, so remove it (deselect)
+        selectedDates.splice(idx, 1);
+    } else {
+        // Add date to selection
+        selectedDates.push(clickedDateStr);
+    }
 
-                        // Array toggle logic for multi-selection
-                        var idx = selectedDates.indexOf(clickedDateStr);
-                        if (idx > -1) {
-                            selectedDates.splice(idx, 1);
-                        } else {
-                            selectedDates.push(clickedDateStr);
-                        }
+    if (selectedDates.length === 0) {
+        closeRightPanel();
+        return;
+    }
 
-                        if (selectedDates.length === 0) {
-                            closeRightPanel();
-                            return;
-                        }
+    // Apply active blue mode and update visual class toggling
+    calendarEl.classList.add('calendar-active-mode-blue');
+    updateSelectionHighlight();
 
-                        calendarEl.classList.add('calendar-active-mode-blue');
-                        updateSelectionHighlight();
-                        openActivityPanelForCreate(selectedDates.join(', '));
-                    } else {
+    // Open the create panel with the comma-separated dates
+    openActivityPanelForCreate(selectedDates.join(', '));
+}else {
                         if (isPast && currentDayActivities.length === 0) {
                             return;
                         }
