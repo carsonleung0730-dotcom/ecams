@@ -1,4 +1,5 @@
 <?php
+
 require_once 'db.php';
 session_start();
 
@@ -14,7 +15,7 @@ if (!isset($_SESSION['uid']) && !isset($_SESSION['user_id'])) {
 
 $studentUid = $_SESSION['uid'] ?? $_SESSION['user_id'] ?? $_SESSION['id'] ?? 2;
 
-// Handle join request submission via AJAX POST
+// Handle join request submission via AJAX POST (saving to join_requests.json)
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'request_join') {
     header('Content-Type: application/json');
     $oid = trim($_POST['oid'] ?? '');
@@ -25,7 +26,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         exit;
     }
 
-    // Check if already a member
+    if (empty($reason)) {
+        echo json_encode(['success' => false, 'message' => 'Reason for joining is required.']);
+        exit;
+    }
+
+    // Check if already a member in the database
     $chkMem = $conn->prepare("SELECT COUNT(*) FROM membership WHERE oid = ? AND sid = ?");
     $chkMem->bind_param("ss", $oid, $studentUid);
     $chkMem->execute();
@@ -38,31 +44,47 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         exit;
     }
 
-    // Check if a pending request already exists
-    $chkReq = $conn->prepare("SELECT COUNT(*) FROM join_requests WHERE oid = ? AND sid = ? AND status = 'pending'");
-    $chkReq->bind_param("ss", $oid, $studentUid);
-    $chkReq->execute();
-    $chkReq->bind_result($reqCount);
-    $chkReq->fetch();
-    $chkReq->close();
-
-    if ($reqCount > 0) {
-        echo json_encode(['success' => false, 'message' => 'You already have a pending request for this organisation.']);
-        exit;
+    // File-based JSON storage
+    $jsonFile = 'join_requests.json';
+    $requests = [];
+    if (file_exists($jsonFile)) {
+        $jsonContent = file_get_contents($jsonFile);
+        $requests = json_decode($jsonContent, true) ?? [];
     }
 
-    // Insert join request (Ensure your database has a join_requests table: id, oid, sid, reason, status, created_at)
-    $ins = $conn->prepare("INSERT INTO join_requests (oid, sid, reason, status) VALUES (?, ?, ?, 'pending')");
-    if ($ins) {
-        $ins->bind_param("sss", $oid, $studentUid, $reason);
-        if ($ins->execute()) {
-            echo json_encode(['success' => true]);
-        } else {
-            echo json_encode(['success' => false, 'message' => 'Failed to submit request.']);
+    // Check if a pending request already exists in JSON
+    foreach ($requests as $req) {
+        if ($req['oid'] === $oid && $req['sid'] == $studentUid && $req['status'] === 'pending') {
+            echo json_encode(['success' => false, 'message' => 'You already have a pending request for this organisation.']);
+            exit;
         }
-        $ins->close();
+    }
+
+    // Fetch student's name for display convenience
+    $sStmt = $conn->prepare("SELECT name FROM users WHERE uid = ?");
+    $sStmt->bind_param("s", $studentUid);
+    $sStmt->execute();
+    $sStmt->bind_result($studentName);
+    $sStmt->fetch();
+    $sStmt->close();
+
+    // Create request record
+    $newRequest = [
+        'id' => uniqid('req_'),
+        'oid' => $oid,
+        'sid' => $studentUid,
+        'student_name' => $studentName ?? 'Student ' . $studentUid,
+        'reason' => $reason,
+        'status' => 'pending',
+        'created_at' => date('Y-m-d H:i:s')
+    ];
+
+    $requests[] = $newRequest;
+
+    if (file_put_contents($jsonFile, json_encode($requests, JSON_PRETTY_PRINT))) {
+        echo json_encode(['success' => true]);
     } else {
-        echo json_encode(['success' => false, 'message' => 'Database statement preparation failed. (Make sure join_requests table exists).']);
+        echo json_encode(['success' => false, 'message' => 'Failed to save request file. Ensure server permissions permit file writing.']);
     }
     exit;
 }
@@ -70,7 +92,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
 $orgsData = [];
 if (isset($conn) && $conn instanceof mysqli) {
     try {
-        // Fetch all organizations, marking whether the logged-in student is a member
+        // Fetch all organizations, ordering ones the student is in first
         $orgRes = $conn->query("
             SELECT o.oid, o.oname, o.tid, 
                    (SELECT mid FROM monitor WHERE oid = o.oid LIMIT 1) AS monitor_uid, 
@@ -89,7 +111,6 @@ if (isset($conn) && $conn instanceof mysqli) {
                 $isMember = ($org['is_member'] > 0);
 
                 if ($isMember) {
-                    // Fetch members and place the monitor at the top if member
                     $memStmt = $conn->prepare("
                         SELECT u.uid, u.name 
                         FROM membership m
