@@ -206,9 +206,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $y -= 20;
 
         $sectionCounter = 1;
-        $maxLineLength = 43; // Width limit before wrapping
+        $maxLineLength = 43; // Character limit before wrapping
 
-        // Helper function to render multi-line activity details with right-hand side status vertically centered
+        // Helper function to render wrapped activity details with right-hand side status vertically centered
         $renderActivityRow = function(&$pdfCommands, &$y, $actLabel, $statusText, $maxLineLength) {
             $wrappedLines = wordwrap($actLabel, $maxLineLength, "\n", true);
             $lines = explode("\n", $wrappedLines);
@@ -259,7 +259,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         $attCount++;
                     }
                     
-                    $actLabel = $index . ". " . $act['aname'] . " (" . $act['date'] . ")";
+                    $actLabel = $index . ". " . $act['aname'] . " (" . $orgName . ") (" . $act['date'] . ")";
                     $renderActivityRow($pdfCommands, $y, $actLabel, $status, $maxLineLength);
                     $index++;
                 }
@@ -287,8 +287,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             $attCount++;
                         }
                         
-                        $orgBracket = isset($orgMap[$act['oid']]) ? " (" . $orgMap[$act['oid']] . ")" : "";
-                        $actLabel = $index . ". " . $act['aname'] . $orgBracket . " (" . $act['date'] . ")";
+                        $orgNameStr = isset($orgMap[$act['oid']]) ? " (" . $orgMap[$act['oid']] . ")" : "";
+                        $actLabel = $index . ". " . $act['aname'] . $orgNameStr . " (" . $act['date'] . ")";
 
                         $renderActivityRow($pdfCommands, $y, $actLabel, $status, $maxLineLength);
                         $index++;
@@ -335,7 +335,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         $partCount++;
                     }
 
-                    $actLabel = $index . ". " . $act['aname'] . " (" . $act['date'] . ")";
+                    $actLabel = $index . ". " . $act['aname'] . " (" . $orgName . ") (" . $act['date'] . ")";
                     $renderActivityRow($pdfCommands, $y, $actLabel, "Rate: " . $rateDisplay, $maxLineLength);
                     $index++;
                 }
@@ -365,8 +365,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             $partCount++;
                         }
 
-                        $orgBracket = isset($orgMap[$act['oid']]) ? " (" . $orgMap[$act['oid']] . ")" : "";
-                        $actLabel = $index . ". " . $act['aname'] . $orgBracket . " (" . $act['date'] . ")";
+                        $orgNameStr = isset($orgMap[$act['oid']]) ? " (" . $orgMap[$act['oid']] . ")" : "";
+                        $actLabel = $index . ". " . $act['aname'] . $orgNameStr . " (" . $act['date'] . ")";
 
                         $renderActivityRow($pdfCommands, $y, $actLabel, "Rate: " . $rateDisplay, $maxLineLength);
                         $index++;
@@ -414,7 +414,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         $satCount++;
                     }
 
-                    $actLabel = $index . ". " . $act['aname'] . " (" . $act['date'] . ")";
+                    $actLabel = $index . ". " . $act['aname'] . " (" . $orgName . ") (" . $act['date'] . ")";
                     $renderActivityRow($pdfCommands, $y, $actLabel, "Satisfactory Rate: " . $sRateDisplay, $maxLineLength);
                     $index++;
                 }
@@ -444,8 +444,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             $satCount++;
                         }
 
-                        $orgBracket = isset($orgMap[$act['oid']]) ? " (" . $orgMap[$act['oid']] . ")" : "";
-                        $actLabel = $index . ". " . $act['aname'] . $orgBracket . " (" . $act['date'] . ")";
+                        $orgNameStr = isset($orgMap[$act['oid']]) ? " (" . $orgMap[$act['oid']] . ")" : "";
+                        $actLabel = $index . ". " . $act['aname'] . $orgNameStr . " (" . $act['date'] . ")";
 
                         $renderActivityRow($pdfCommands, $y, $actLabel, "Satisfactory Rate: " . $sRateDisplay, $maxLineLength);
                         $index++;
