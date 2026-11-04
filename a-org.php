@@ -76,7 +76,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         if (!$validTeacher) {
             echo json_encode([
                 'success' => false,
-                'message' => 'Managing teacher UID must belong to a teacher or admin.'
+                'message' => 'Managing teacher must belong to a teacher or admin.'
             ]);
             exit;
         }
@@ -210,7 +210,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             if (!$validTeacher) {
                 echo json_encode([
                     'success' => false,
-                    'message' => 'Managing teacher UID must belong to a teacher or admin.'
+                    'message' => 'Managing teacher must belong to a teacher or admin.'
                 ]);
                 exit;
             }
@@ -445,16 +445,8 @@ if ($orgRes) {
 
         .teacher-info { font-size: 0.85rem; color: #475569; text-align: left; margin-top: 0.4rem; position: relative; }
         .teacher-name-bold { font-weight: 700; color: #1e293b; font-size: 1.1rem; }
-        .teacher-input { width: 100%; padding: 6px 8px; font-size: 0.85rem; border: 1px solid #cbd5e1; border-radius: 4px; margin-top: 4px; background-color: #ffffff; color: #1e293b; }
-        .teacher-input:hover, .teacher-input:focus { outline: none; border-color: #2563eb; box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.15); }
-        
-        .custom-dropdown-list {
-            position: absolute; top: 100%; left: 0; width: 100%; background: #ffffff;
-            border: 1px solid #cbd5e1; border-radius: 4px; max-height: 150px; overflow-y: auto;
-            z-index: 100; display: none; box-shadow: 0 4px 6px rgba(0,0,0,0.1); margin-top: 2px;
-        }
-        .custom-dropdown-item { padding: 6px 10px; font-size: 0.85rem; color: #1e293b; cursor: pointer; border-bottom: 1px solid #f1f5f9; }
-        .custom-dropdown-item:hover { background-color: #eff6ff; color: #2563eb; border-left: 3px solid #2563eb; }
+        .teacher-select { width: 100%; padding: 6px 8px; font-size: 0.85rem; border: 1px solid #cbd5e1; border-radius: 4px; margin-top: 4px; background-color: #ffffff; color: #1e293b; cursor: pointer; display: none; }
+        .teacher-select:hover, .teacher-select:focus { outline: none; border-color: #2563eb; box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.15); }
 
         .members-section-title { font-size: 0.8rem; font-weight: 710; color: #5d5c5c; text-transform: uppercase; margin-bottom: 0.5rem; flex-shrink: 0; }
         .member-search-input { width: 100%; padding: 4px 8px; font-size: 0.8rem; border: 1px solid #cbd5e1; border-radius: 4px; margin-bottom: 6px; background-color: #ffffff; color: #1e293b; flex-shrink: 0; display: none; }
@@ -500,13 +492,18 @@ if ($orgRes) {
         body.editing-mode .delete-arrow-btn,
         body.editing-mode .btn-upload-file,
         body.editing-mode .org-title-edit,
+        body.editing-mode .teacher-select,
         body.editing-mode .member-search-input,
         body.editing-mode .members-view-edit,
         body.editing-mode .btn-save-org,
         body.editing-mode .has-image .delete-photo-btn {
             display: flex !important;
         }
+        body.editing-mode .teacher-select {
+            display: block !important;
+        }
         body.editing-mode .org-title-display,
+        body.editing-mode .teacher-display,
         body.editing-mode .members-view-display {
             display: none !important;
         }
@@ -596,18 +593,17 @@ if ($orgRes) {
                                 </div>
 
                                 <div class="teacher-info">
-                                    <div style="margin-bottom: 2px; font-weight: 700; color: #475569;">Teacher Managing:</div>
-                                    <div style="position: relative;">
-                                        <input type="text" class="teacher-input edit-tid" value="<?= $currentTid ? htmlspecialchars($currentTid) : '' ?>" placeholder="Select or type teacher UID/name" autocomplete="off">
-                                        <div class="custom-dropdown-list edit-teacher-dropdown">
-                                            <div class="custom-dropdown-item" data-uid="" data-name="Unassigned">[Unassigned] None</div>
-                                            <?php foreach ($teachersList as $t): ?>
-                                                <div class="custom-dropdown-item" data-uid="<?= htmlspecialchars($t['uid']) ?>" data-name="<?= htmlspecialchars($t['name']) ?>">
-                                                    [<?= htmlspecialchars($t['uid']) ?>] <?= htmlspecialchars($t['name']) ?>
-                                                </div>
-                                            <?php endforeach; ?>
-                                        </div>
+                                    <div class="teacher-display" style="text-align: center;">
+                                        Teacher: <span class="teacher-name-bold"><?= htmlspecialchars($currentTeacherLabel) ?></span>
                                     </div>
+                                    <select class="teacher-select edit-tid">
+                                        <option value="">[Unassigned] None</option>
+                                        <?php foreach ($teachersList as $t): ?>
+                                            <option value="<?= htmlspecialchars($t['uid']) ?>" <?= ($t['uid'] === $currentTid) ? 'selected' : '' ?>>
+                                                [<?= htmlspecialchars($t['uid']) ?>] <?= htmlspecialchars($t['name']) ?>
+                                            </option>
+                                        <?php endforeach; ?>
+                                    </select>
                                 </div>
                             </div>
 
@@ -683,17 +679,14 @@ if ($orgRes) {
 
                         <div class="teacher-info">
                             <div style="margin-bottom: 2px; font-weight: 700; color: #475569;">Teacher Managing:</div>
-                            <div style="position: relative;">
-                                <input type="text" id="newOrgTeacher" class="teacher-input" placeholder="Select or type teacher UID/name" autocomplete="off">
-                                <div id="customTeacherDropdown" class="custom-dropdown-list">
-                                    <div class="custom-dropdown-item" data-uid="" data-name="Unassigned">[Unassigned] None</div>
-                                    <?php foreach ($teachersList as $t): ?>
-                                        <div class="custom-dropdown-item" data-uid="<?= htmlspecialchars($t['uid']) ?>" data-name="<?= htmlspecialchars($t['name']) ?>">
-                                            [<?= htmlspecialchars($t['uid']) ?>] <?= htmlspecialchars($t['name']) ?>
-                                        </div>
-                                    <?php endforeach; ?>
-                                </div>
-                            </div>
+                            <select id="newOrgTeacher" class="teacher-select">
+                                <option value="">[Unassigned] None</option>
+                                <?php foreach ($teachersList as $t): ?>
+                                    <option value="<?= htmlspecialchars($t['uid']) ?>">
+                                        [<?= htmlspecialchars($t['uid']) ?>] <?= htmlspecialchars($t['name']) ?>
+                                    </option>
+                                <?php endforeach; ?>
+                            </select>
                         </div>
                     </div>
 
@@ -836,7 +829,14 @@ if ($orgRes) {
         });
 
         document.addEventListener('input', function(e) {
-            if (isEditingMode && (e.target.classList.contains('edit-oid') || e.target.classList.contains('edit-oname') || e.target.classList.contains('edit-tid'))) {
+            if (isEditingMode && (e.target.classList.contains('edit-oid') || e.target.classList.contains('edit-oname'))) {
+                hasChanges = true;
+                modifyBtn.className = 'control-box blue';
+            }
+        });
+
+        document.addEventListener('change', function(e) {
+            if (isEditingMode && e.target.classList.contains('edit-tid')) {
                 hasChanges = true;
                 modifyBtn.className = 'control-box blue';
             }
@@ -868,46 +868,6 @@ if ($orgRes) {
             }
         });
 
-        document.addEventListener('focus', function(e) {
-            if (e.target.classList.contains('teacher-input') || e.target.id === 'newOrgTeacher') {
-                const dropdown = e.target.nextElementSibling;
-                if (dropdown && dropdown.classList.contains('custom-dropdown-list')) {
-                    dropdown.style.display = 'block';
-                }
-            }
-        }, true);
-
-        document.addEventListener('input', function(e) {
-            if (e.target.classList.contains('teacher-input') || e.target.id === 'newOrgTeacher') {
-                const term = e.target.value.toLowerCase();
-                const dropdown = e.target.nextElementSibling;
-                if (dropdown && dropdown.classList.contains('custom-dropdown-list')) {
-                    dropdown.style.display = 'block';
-                    dropdown.querySelectorAll('.custom-dropdown-item').forEach(item => {
-                        const text = item.textContent.toLowerCase();
-                        item.style.display = text.includes(term) ? 'block' : 'none';
-                    });
-                }
-            }
-        });
-
-        document.addEventListener('click', function(e) {
-            const dropdownItem = e.target.closest('.custom-dropdown-item');
-            if (dropdownItem) {
-                const dropdown = dropdownItem.closest('.custom-dropdown-list');
-                const input = dropdown.previousElementSibling;
-                input.value = dropdownItem.getAttribute('data-uid');
-                dropdown.style.display = 'none';
-                hasChanges = true;
-                modifyBtn.className = 'control-box blue';
-                return;
-            }
-
-            if (!e.target.closest('.teacher-info')) {
-                document.querySelectorAll('.custom-dropdown-list').forEach(d => d.style.display = 'none');
-            }
-        });
-
         modifyBtn.addEventListener('click', function() {
             if (!hasChanges || modifyBtn.classList.contains('grey')) return;
 
@@ -933,7 +893,7 @@ if ($orgRes) {
                     const oldOid = box.getAttribute('data-oid');
                     const newOid = box.querySelector('.edit-oid').value.trim();
                     const oname = box.querySelector('.edit-oname').value.trim();
-                    const tid = box.querySelector('.edit-tid').value.trim();
+                    const tid = box.querySelector('.edit-tid').value;
                     
                     const members = [];
                     const monitors = [];
@@ -967,16 +927,10 @@ if ($orgRes) {
                             return;
                         }
                     }
-                    document.querySelectorAll('.existing-org-box').forEach(box => {
-                        const newOid = box.querySelector('.edit-oid').value.trim();
-                        const oname = box.querySelector('.edit-oname').value.trim();
-                        box.setAttribute('data-oid', newOid);
-                        box.querySelector('.org-title').textContent = newOid + ' - ' + oname;
-                        box.querySelector('.org-title').title = oname;
-                    });
                     hasChanges = false;
                     modifyBtn.className = 'control-box grey';
                     alert('Organisations updated successfully!');
+                    window.location.href = window.location.pathname + '?editing=true';
                 }).catch(err => {
                     alert('Error updating organisations.');
                 });
@@ -1043,7 +997,7 @@ if ($orgRes) {
             saveNewOrgBtn.addEventListener('click', function() {
                 const oid = document.getElementById('newOrgId').value.trim();
                 const oname = document.getElementById('newOrgName').value.trim();
-                const tid = document.getElementById('newOrgTeacher').value.trim();
+                const tid = document.getElementById('newOrgTeacher').value;
 
                 const members = [];
                 const monitors = [];
