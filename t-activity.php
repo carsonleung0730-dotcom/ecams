@@ -651,7 +651,7 @@ $events = array_map(function($act) use ($managedOrgIds) {
             var activeEventId = null;
             var currentSelectedDate = null;
             var currentDayActivities = [];
-            var selectedDates = [];
+            var selectedDates = []; // Array storing clicked calendar dates
 
             var panel = document.getElementById('activityPanel');
             var tabExisting = document.getElementById('tabExisting');
@@ -745,7 +745,6 @@ $events = array_map(function($act) use ($managedOrgIds) {
                 },
 
                 dateClick: function(info) {
-                    var clickedCell = info.dayEl;
                     var clickedDateStr = info.dateStr;
                     var todayStr = getTodayDateStr();
                     var isPast = clickedDateStr < todayStr;
@@ -754,13 +753,13 @@ $events = array_map(function($act) use ($managedOrgIds) {
                         return e.startStr.split('T')[0] === clickedDateStr;
                     });
 
-                    // Comprehensive check for Ctrl/Cmd modifier across all browsers & platforms
                     var isCtrlPressed = isCtrlDown || info.jsEvent.ctrlKey || info.jsEvent.metaKey || info.jsEvent.button === 2;
 
                     if (isCtrlPressed) {
                         info.jsEvent.preventDefault();
                         if (isPast) return; // Disallow selecting past dates for new activities
 
+                        // Array toggle logic for multi-selection
                         var idx = selectedDates.indexOf(clickedDateStr);
                         if (idx > -1) {
                             selectedDates.splice(idx, 1);
@@ -1017,7 +1016,7 @@ $events = array_map(function($act) use ($managedOrgIds) {
                 document.getElementById('field_aid').disabled = true;
                 
                 var dateInput = document.getElementById('field_date');
-                dateInput.readOnly = true; // ensure date field is view-only
+                dateInput.readOnly = true;
 
                 var oidSelect = document.getElementById('field_oid');
                 Array.from(oidSelect.options).forEach(function(opt) {
@@ -1051,8 +1050,8 @@ $events = array_map(function($act) use ($managedOrgIds) {
                 document.getElementById('field_oid').value = '';
                 document.getElementById('field_aname').value = '';
                 
-                // Explicitly populate date field with comma-separated dates
-                dateInput.value = dateVal || selectedDates.join(', ') || currentSelectedDate || '';
+                // Populate date input directly from the selectedDates array
+                dateInput.value = selectedDates.length > 0 ? selectedDates.join(', ') : (dateVal || '');
 
                 document.getElementById('field_room').value = '';
                 document.getElementById('field_timeslot').value = 'Lunch Recess';
