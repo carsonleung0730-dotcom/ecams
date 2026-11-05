@@ -1,5 +1,5 @@
 <?php
-
+// Database configuration and session parameters loaded FIRST to avoid warnings
 require_once 'db.php';
 session_start();
 
@@ -70,8 +70,8 @@ try {
             $diffDays = (int)$todayObj->diff($actDateObj)->format('%r%a');
             $showAlert = false;
 
-            // Show reminder if the activity is today or upcoming within 24 hours[cite: 1]
-            if ($diffDays === 0 || ($diffDays === 1 && $currentTime->format('H:i') >= '00:00')) {
+            // Accessible once the activity has started / today or past due with no upper date/time limit
+            if ($diffDays <= 0) {
                 $showAlert = true;
             }
 
@@ -198,18 +198,27 @@ try {
         }
         .welcome-title { font-size: 2.2rem; font-weight: 800; color: #1e293b; margin-bottom: 0.5rem; letter-spacing: -0.03em; }
         .welcome-subtitle { font-size: 1.05rem; font-weight: 500; color: #64748b; }
-        .pw { font-size: 0.75rem; color: #fd6601; }
+        
+        .unhide-btn-container { width: 100%; max-width: 650px; display: flex; justify-content: flex-end; }
+        .btn-unhide {
+            background-color: #2563eb; color: #ffffff; border: none; padding: 0.5rem 1.25rem;
+            font-size: 0.85rem; font-weight: 700; border-radius: 6px; cursor: pointer;
+            transition: background-color 0.2s ease; box-shadow: 0 2px 5px rgba(37, 99, 235, 0.2);
+        }
+        .btn-unhide:hover { background-color: #1d4ed8; }
 
         .user-details-card {
             background-color: #ffffff; border-radius: 16px; padding: 2rem 2.5rem;
             box-shadow: 0 10px 25px rgba(37, 99, 235, 0.1); border: 1px solid #dbeafe;
-            max-width: 650px; width: 100%;
+            max-width: 650px; width: 100%; display: none; /* Initially hidden */
         }
+        .user-details-card.is-visible { display: block; }
         .user-details-title { font-size: 1.25rem; font-weight: 700; color: #2563eb; margin-bottom: 1.25rem; border-bottom: 2px solid #f1f5f9; padding-bottom: 0.5rem; }
         .detail-row { display: flex; justify-content: space-between; align-items: center; padding: 0.75rem 0; border-bottom: 1px solid #f8fafc; font-size: 0.95rem; }
         .detail-row:last-child { border-bottom: none; }
         .detail-label { font-weight: 600; color: #64748b; text-transform: uppercase; font-size: 0.8rem; letter-spacing: 0.05em; }
         .detail-value { font-weight: 700; color: #1e293b; }
+        .pw { font-size: 0.75rem; color: #fd6601; margin-bottom: 1rem; }
     </style>
 </head>
 <body>
@@ -219,7 +228,7 @@ try {
         <div class="monitor-alerts-container">
             <?php foreach ($monitorAlerts as $alert): ?>
                 <div class="monitor-warning-box">
-                    <a href="attendance.php?aid=<?= htmlspecialchars($alert['aid']) ?>">⚠️ Reminder: <?= htmlspecialchars($alert['act_name']) ?> (<?= htmlspecialchars($alert['org_name']) ?> - <?= htmlspecialchars($alert['timeslot']) ?>)</a>
+                    <a href="attendance.php?aid=<?= htmlspecialchars($alert['aid']) ?>">⚠️ Active/Ongoing: <?= htmlspecialchars($alert['act_name']) ?> (<?= htmlspecialchars($alert['org_name']) ?> - <?= htmlspecialchars($alert['timeslot']) ?>)</a>
                     <button type="button" class="close-alert-btn" onclick="this.parentElement.remove()">×</button>
                 </div>
             <?php endforeach; ?>
@@ -261,7 +270,11 @@ try {
                 <p class="welcome-subtitle">Explore your organisations and extracurricular activities using the navigation menu.</p>
             </div>
 
-            <div class="user-details-card">
+            <div class="unhide-btn-container">
+                <button type="button" class="btn-unhide" id="toggleDetailsBtn">Unhidden</button>
+            </div>
+
+            <div class="user-details-card" id="userDetailsCard">
                 <div class="user-details-title">My Account Details</div>
                 <p class="pw">*You should remember your own password. If you forgot your password, contact an admin for help.</p>
                 <div class="detail-row">
@@ -292,9 +305,6 @@ try {
         </main>
     </div>
 
-    <!-- DEBUGGER BANNER -->
-    </div>
-
     <script>
         function updateClock() {
             const now = new Date();
@@ -305,6 +315,18 @@ try {
         }
         updateClock();
         setInterval(updateClock, 1000);
+
+        const toggleDetailsBtn = document.getElementById('toggleDetailsBtn');
+        const userDetailsCard = document.getElementById('userDetailsCard');
+
+        toggleDetailsBtn.addEventListener('click', () => {
+            userDetailsCard.classList.toggle('is-visible');
+            if (userDetailsCard.classList.contains('is-visible')) {
+                toggleDetailsBtn.textContent = 'Hide Details';
+            } else {
+                toggleDetailsBtn.textContent = 'Unhidden';
+            }
+        });
     </script>
 </body>
 </html>
