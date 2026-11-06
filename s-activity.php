@@ -236,7 +236,7 @@ $events = array_map(function($act) {
             <a href="s-org.php" class="nav-btn nav-btn-org">
                 <img src="org.png" alt="Organization" class="btn-icon">
             </a>
-            <a href="s-activity.php" class="nav-btn nav-btn-activity is-active" id="navBtnActivity">
+            <a href="student.php" class="nav-btn nav-btn-activity is-active" id="navBtnActivity">
                 <img src="act.png" alt="Activity" class="btn-icon">
             </a>
         </aside>
