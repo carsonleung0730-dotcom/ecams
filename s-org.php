@@ -301,7 +301,7 @@ if (isset($conn) && $conn instanceof mysqli) {
 
     <div class="app-body">
         <aside class="side-panel">
-            <a href="s-org.php" class="nav-btn nav-btn-org is-active" id="navBtnOrg">
+            <a href="student.php" class="nav-btn nav-btn-org is-active" id="navBtnOrg">
                 <img src="org.png" alt="Organization" class="btn-icon">
             </a>
             <a href="s-activity.php" class="nav-btn nav-btn-activity">
