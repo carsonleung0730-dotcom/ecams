@@ -618,7 +618,7 @@ if ($orgRes) {
 
     <div class="app-body">
         <aside class="side-panel">
-            <a href="t-org.php" class="nav-btn nav-btn-org is-active" id="navBtnOrg">
+            <a href="teacher.php" class="nav-btn nav-btn-org is-active" id="navBtnOrg">
                 <img src="org.png" alt="Organisation" class="btn-icon">
             </a>
             <a href="t-activity.php" class="nav-btn nav-btn-activity">
