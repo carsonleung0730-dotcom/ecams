@@ -3,7 +3,6 @@
 require_once 'db.php';
 session_start();
 
-
 if (!isset($_SESSION['role']) || strtolower($_SESSION['role']) !== 'student') {
     // Redirect unauthorized users to an error page or their respective dashboard
     header('Location: unauthorized.php');
@@ -13,6 +12,11 @@ if (!isset($_SESSION['role']) || strtolower($_SESSION['role']) !== 'student') {
 if (!isset($_SESSION['uid']) && !isset($_SESSION['user_id'])) {
     header('Location: shit.php');
     exit();
+}
+
+// Initialize visited attendance pages tracking array in session if it doesn't exist
+if (!isset($_SESSION['visited_attendance'])) {
+    $_SESSION['visited_attendance'] = [];
 }
 
 // Retrieve logged-in user identifier from session[cite: 3]
@@ -44,7 +48,7 @@ $debugActivitiesCount = 0;
 
 try {
     if (isset($conn) && $conn instanceof mysqli) {
-        // Correctly query activities linked to the organizations this student monitors
+        // Correctly query activities linked to the organizations this student monitors[cite: 4]
         $alertStmt = $conn->prepare("
             SELECT a.aid, a.aname, a.date, a.timeslot, o.oname
             FROM monitor mn
@@ -64,20 +68,27 @@ try {
         $currentTime = new DateTime('now');
 
         foreach ($monitoredActivities as $act) {
+            $aid = intval($act['aid']);
+
+            // Skip if the student has already visited this activity's attendance page
+            if (in_array($aid, $_SESSION['visited_attendance'], true)) {
+                continue;
+            }
+
             $actDateObj = new DateTime($act['date']);
             $todayObj = new DateTime($currentTime->format('Y-m-d'));
             
             $diffDays = (int)$todayObj->diff($actDateObj)->format('%r%a');
             $showAlert = false;
 
-            // Accessible once the activity has started / today or past due with no upper date/time limit
-            if ($diffDays <= 0) {
+            // Show alert if activity date is in the past, today, or tomorrow ($diffDays <= 1)
+            if ($diffDays <= 1) {
                 $showAlert = true;
             }
 
             if ($showAlert) {
                 $monitorAlerts[] = [
-                    'aid' => $act['aid'],
+                    'aid' => $aid,
                     'act_name' => $act['aname'],
                     'org_name' => $act['oname'],
                     'timeslot' => $act['timeslot']
@@ -223,12 +234,12 @@ try {
 </head>
 <body>
 
-    <!-- Floating Monitor Warning Boxes with correct dynamic Activity ID (aid) -->
+    <!-- Floating Monitor Warning Boxes with correct dynamic Activity ID (aid)[cite: 4] -->
     <?php if (!empty($monitorAlerts)): ?>
         <div class="monitor-alerts-container">
             <?php foreach ($monitorAlerts as $alert): ?>
                 <div class="monitor-warning-box">
-                    <a href="attendance.php?aid=<?= htmlspecialchars($alert['aid']) ?>">⚠️ Active/Ongoing: <?= htmlspecialchars($alert['act_name']) ?> (<?= htmlspecialchars($alert['org_name']) ?> - <?= htmlspecialchars($alert['timeslot']) ?>)</a>
+                    <a href="attendance.php?aid=<?= htmlspecialchars($alert['aid']) ?>">⚠️ Upcoming/Ongoing: <?= htmlspecialchars($alert['act_name']) ?> (<?= htmlspecialchars($alert['org_name']) ?> - <?= htmlspecialchars($alert['timeslot']) ?>)</a>
                     <button type="button" class="close-alert-btn" onclick="this.parentElement.remove()">×</button>
                 </div>
             <?php endforeach; ?>
