@@ -5,7 +5,6 @@ require_once 'db.php';
 session_start();
 
 if (!isset($_SESSION['role']) || strtolower($_SESSION['role']) !== 'teacher') {
-    // Redirect unauthorized users to an error page or their respective dashboard
     header('Location: unauthorized.php');
     exit();
 }
@@ -14,13 +13,17 @@ if (!isset($_SESSION['uid']) && !isset($_SESSION['user_id'])) {
     exit();
 }
 
-// Initialize visited attendance pages tracking array in session if it doesn't exist
-if (!isset($_SESSION['visited_attendance'])) {
-    $_SESSION['visited_attendance'] = [];
-}
-
 // Retrieve logged-in teacher identifier from session
 $teacherUid = $_SESSION['uid'] ?? $_SESSION['user_id'] ?? $_SESSION['id'] ?? 1;
+
+// Read visited activities from JSON file for persistent persistence across logouts
+$visitedAids = [];
+$jsonFile = 'visited_attendance.json';
+if (file_exists($jsonFile)) {
+    $jsonContent = file_get_contents($jsonFile);
+    $visitedData = json_decode($jsonContent, true) ?? [];
+    $visitedAids = $visitedData[$teacherUid] ?? [];
+}
 
 // Fetch teacher account details
 $stmt = $conn->prepare("SELECT uid, name, email, role, class, cid FROM users WHERE uid = ?");
@@ -42,10 +45,8 @@ if (!$userInfo) {
 }
 
 $monitorAlerts = [];
-$debugActivitiesCount = 0;
 
 try {
-    // Teachers automatically manage organizations where tid matches their uid (or via monitor table)
     $alertStmt = $conn->prepare("
         SELECT a.aid, a.aname, a.date, a.timeslot, o.oname
         FROM organisations o
@@ -59,14 +60,13 @@ try {
     $managedActivities = $alertRes->fetch_all(MYSQLI_ASSOC);
     $alertStmt->close();
 
-    $debugActivitiesCount = count($managedActivities);
     $currentTime = new DateTime('now');
 
     foreach ($managedActivities as $act) {
         $aid = intval($act['aid']);
         
-        // Skip if the teacher has already visited this activity's attendance page
-        if (in_array($aid, $_SESSION['visited_attendance'], true)) {
+        // Skip if this teacher has already visited this activity's attendance page
+        if (in_array($aid, $visitedAids, true)) {
             continue;
         }
 
@@ -216,7 +216,7 @@ try {
         .user-details-card {
             background-color: #ffffff; border-radius: 16px; padding: 2rem 2.5rem;
             box-shadow: 0 10px 25px rgba(37, 99, 235, 0.1); border: 1px solid #dbeafe;
-            max-width: 650px; width: 100%; display: none; /* Initially hidden */
+            max-width: 650px; width: 100%; display: none;
         }
         .user-details-card.is-visible { display: block; }
         .user-details-title { font-size: 1.25rem; font-weight: 700; color: #2563eb; margin-bottom: 1.25rem; border-bottom: 2px solid #f1f5f9; padding-bottom: 0.5rem; }
@@ -229,7 +229,6 @@ try {
 </head>
 <body>
 
-    <!-- Floating Monitor Warning Boxes linking to attendance.php?aid=... -->
     <?php if (!empty($monitorAlerts)): ?>
         <div class="monitor-alerts-container">
             <?php foreach ($monitorAlerts as $alert): ?>
