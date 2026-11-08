@@ -1,14 +1,25 @@
 <?php
 require_once 'db.php';
 session_start();
-if (isset($_GET['aid'])) {
-    $visitedAid = intval($_GET['aid']);
-    if (!isset($_SESSION['visited_attendance'])) {
-        $_SESSION['visited_attendance'] = [];
-    }
-    if (!in_array($visitedAid, $_SESSION['visited_attendance'], true)) {
-        $_SESSION['visited_attendance'][] = $visitedAid;
-    }
+$jsonFile = 'visited_attendance.json';
+
+// Load existing data or create an empty array if file doesn't exist
+$visitedData = [];
+if (file_exists($jsonFile)) {
+    $jsonContent = file_get_contents($jsonFile);
+    $visitedData = json_decode($jsonContent, true) ?? [];
+}
+
+// Ensure the user has an entry array
+if (!isset($visitedData[$userId])) {
+    $visitedData[$userId] = [];
+}
+
+// Add the activity ID if not already tracked
+if (isset($aid) && !in_array(intval($aid), $visitedData[$userId], true)) {
+    $visitedData[$userId][] = intval($aid);
+    // Save back to JSON file (creates it if it doesn't exist)
+    file_put_contents($jsonFile, json_encode($visitedData, JSON_PRETTY_PRINT));
 }
 
 
