@@ -13,10 +13,9 @@ if (!isset($_SESSION['uid']) && !isset($_SESSION['user_id'])) {
     exit();
 }
 
-// Retrieve logged-in teacher identifier from session
 $teacherUid = $_SESSION['uid'] ?? $_SESSION['user_id'] ?? $_SESSION['id'] ?? 1;
 
-// Read visited activities from JSON file for persistent persistence across logouts
+// Read visited activities from JSON file for attendance records persistence
 $visitedAids = [];
 $jsonFile = 'visited_attendance.json';
 if (file_exists($jsonFile)) {
@@ -44,11 +43,12 @@ if (!$userInfo) {
     ];
 }
 
-$monitorAlerts = [];
+$reminders = [];
+$attendanceAlerts = [];
 
 try {
     $alertStmt = $conn->prepare("
-        SELECT a.aid, a.aname, a.date, a.timeslot, o.oname
+        SELECT a.aid, a.aname, a.date, a.room, a.timeslot, o.oname
         FROM organisations o
         JOIN activity a ON o.oid = a.oid
         WHERE o.tid = ?
@@ -64,30 +64,27 @@ try {
 
     foreach ($managedActivities as $act) {
         $aid = intval($act['aid']);
-        
-        // Skip if this teacher has already visited this activity's attendance page
-        if (in_array($aid, $visitedAids, true)) {
-            continue;
-        }
-
         $actDateObj = new DateTime($act['date']);
         $todayObj = new DateTime($currentTime->format('Y-m-d'));
         
         $diffDays = (int)$todayObj->diff($actDateObj)->format('%r%a');
-        $showAlert = false;
 
-        // Show alert if activity date is in the past, today, or tomorrow ($diffDays <= 1)
-        if ($diffDays <= 1) {
-            $showAlert = true;
+        // Type 2: Reminder message for Today or Tomorrow ($diffDays === 0 or 1)
+        if ($diffDays === 0 || $diffDays === 1) {
+            $whenText = ($diffDays === 0) ? 'Today' : 'Tomorrow';
+            $reminders[] = [
+                'msg' => "Reminder! $whenText, you will need to attend " . $act['aname'] . " organised by " . $act['oname'] . " at " . $act['timeslot'] . " in room " . $act['room'] . "!"
+            ];
         }
 
-        if ($showAlert) {
-            $monitorAlerts[] = [
-                'aid' => $aid,
-                'act_name' => $act['aname'],
-                'org_name' => $act['oname'],
-                'timeslot' => $act['timeslot']
-            ];
+        // Type 1: Record attendance warning for Past/Ended activities ($diffDays < 0), hidden if visited
+        if ($diffDays < 0) {
+            if (!in_array($aid, $visitedAids, true)) {
+                $attendanceAlerts[] = [
+                    'aid' => $aid,
+                    'msg' => "Record attendance: " . $act['aname'] . " (" . $act['oname'] . " - " . $act['timeslot'] . ")"
+                ];
+            }
         }
     }
 } catch (Exception $e) {
@@ -147,6 +144,7 @@ try {
             display: flex;
             flex-direction: column;
             gap: 8px;
+            max-width: 400px;
         }
         .monitor-warning-box {
             background-color: #fef08a;
@@ -160,21 +158,19 @@ try {
             align-items: center;
             gap: 12px;
             box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-            animation: pulse-yellow 1.5s infinite;
+        }
+        .monitor-warning-box.attendance-box {
+            background-color: #fee2e2;
+            border-color: #dc2626;
+            color: #991b1b;
         }
         .monitor-warning-box a { color: inherit; text-decoration: none; }
         .monitor-warning-box a:hover { text-decoration: underline; }
         .close-alert-btn {
             background: none; border: none; font-size: 1rem; font-weight: bold;
-            cursor: pointer; color: inherit; opacity: 0.7;
+            cursor: pointer; color: inherit; opacity: 0.7; margin-left: auto;
         }
         .close-alert-btn:hover { opacity: 1; }
-
-        @keyframes pulse-yellow {
-            0% { box-shadow: 0 0 0 0 rgba(250, 204, 21, 0.4); }
-            70% { box-shadow: 0 0 0 8px rgba(250, 204, 21, 0); }
-            100% { box-shadow: 0 0 0 0 rgba(250, 204, 21, 0); }
-        }
 
         .app-body { flex: 1; display: flex; height: calc(100vh - 110px); position: relative; overflow: hidden; }
         .side-panel {
@@ -229,16 +225,24 @@ try {
 </head>
 <body>
 
-    <?php if (!empty($monitorAlerts)): ?>
-        <div class="monitor-alerts-container">
-            <?php foreach ($monitorAlerts as $alert): ?>
-                <div class="monitor-warning-box">
-                    <a href="attendance.php?aid=<?= htmlspecialchars($alert['aid']) ?>">⚠️ Upcoming/Ongoing: <?= htmlspecialchars($alert['act_name']) ?> (<?= htmlspecialchars($alert['org_name']) ?> - <?= htmlspecialchars($alert['timeslot']) ?>)</a>
-                    <button type="button" class="close-alert-btn" onclick="this.parentElement.remove()">×</button>
-                </div>
-            <?php endforeach; ?>
-        </div>
-    <?php endif; ?>
+    <!-- Floating Warning Containers -->
+    <div class="monitor-alerts-container">
+        <!-- Reminders for all teachers -->
+        <?php foreach ($reminders as $rem): ?>
+            <div class="monitor-warning-box">
+                <span>🔔 <?= htmlspecialchars($rem['msg']) ?></span>
+                <button type="button" class="close-alert-btn" onclick="this.parentElement.remove()">×</button>
+            </div>
+        <?php endforeach; ?>
+
+        <!-- Record Attendance warnings for teachers (past activities only, hidden once visited) -->
+        <?php foreach ($attendanceAlerts as $att): ?>
+            <div class="monitor-warning-box attendance-box">
+                <a href="attendance.php?aid=<?= htmlspecialchars($att['aid']) ?>">⚠️ <?= htmlspecialchars($att['msg']) ?></a>
+                <button type="button" class="close-alert-btn" onclick="this.parentElement.remove()">×</button>
+            </div>
+        <?php endforeach; ?>
+    </div>
 
     <header>
         <div class="header-content">
