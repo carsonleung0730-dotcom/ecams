@@ -1,6 +1,15 @@
 <?php
 require_once 'db.php';
 session_start();
+if (isset($_GET['aid'])) {
+    $visitedAid = intval($_GET['aid']);
+    if (!isset($_SESSION['visited_attendance'])) {
+        $_SESSION['visited_attendance'] = [];
+    }
+    if (!in_array($visitedAid, $_SESSION['visited_attendance'], true)) {
+        $_SESSION['visited_attendance'][] = $visitedAid;
+    }
+}
 
 
 
