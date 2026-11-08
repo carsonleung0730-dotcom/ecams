@@ -13,10 +13,9 @@ if (!isset($_SESSION['uid']) && !isset($_SESSION['user_id'])) {
     exit();
 }
 
-// Retrieve logged-in student identifier from session[cite: 3, 4]
 $studentUid = $_SESSION['uid'] ?? $_SESSION['user_id'] ?? $_SESSION['id'] ?? 2;
 
-// Read visited activities from JSON file for persistent persistence across logouts
+// Read visited activities from JSON file for attendance records persistence
 $visitedAids = [];
 $jsonFile = 'visited_attendance.json';
 if (file_exists($jsonFile)) {
@@ -25,7 +24,7 @@ if (file_exists($jsonFile)) {
     $visitedAids = $visitedData[$studentUid] ?? [];
 }
 
-// Fetch complete user details from the database using MySQLi[cite: 3, 4]
+// Fetch complete user details from the database using MySQLi
 $userInfo = [
     'uid' => $studentUid,
     'name' => 'Student User',
@@ -46,53 +45,76 @@ if (isset($conn) && $conn instanceof mysqli) {
     $stmt->close();
 }
 
-$monitorAlerts = [];
+$reminders = [];
+$attendanceAlerts = [];
 
 try {
     if (isset($conn) && $conn instanceof mysqli) {
-        // Correctly query activities linked to the organizations this student monitors[cite: 4]
-        $alertStmt = $conn->prepare("
-            SELECT a.aid, a.aname, a.date, a.timeslot, o.oname
+        $currentTime = new DateTime('now');
+
+        // 1. Fetch activities for ALL organizations where student is a member (for Reminders)
+        $memberStmt = $conn->prepare("
+            SELECT DISTINCT a.aid, a.aname, a.date, a.room, a.timeslot, o.oname
+            FROM membership m
+            JOIN organisations o ON m.oid = o.oid
+            JOIN activity a ON o.oid = a.oid
+            WHERE m.sid = ?
+        ");
+        $memberStmt->bind_param("s", $studentUid);
+        $memberStmt->execute();
+        $memberRes = $memberStmt->get_result();
+        $memberActivities = $memberRes->fetch_all(MYSQLI_ASSOC);
+        $memberStmt->close();
+
+        foreach ($memberActivities as $act) {
+            $actDateObj = new DateTime($act['date']);
+            $todayObj = new DateTime($currentTime->format('Y-m-d'));
+            $diffDays = (int)$todayObj->diff($actDateObj)->format('%r%a');
+
+            // Type 2: Reminder message for Today or Tomorrow ($diffDays === 0 or 1)
+            if ($diffDays === 0 || $diffDays === 1) {
+                $whenText = ($diffDays === 0) ? 'Today' : 'Tomorrow';
+                $reminders[] = [
+                    'msg' => "Reminder! $whenText, you will need to attend " . $act['aname'] . " organised by " . $act['oname'] . " at " . $act['timeslot'] . " in room " . $act['room'] . "!"
+                ];
+            }
+        }
+
+        // 2. Fetch activities for organizations where student is a MONITOR (for Record Attendance warnings)
+        $monitorStmt = $conn->prepare("
+            SELECT DISTINCT a.aid, a.aname, a.date, a.timeslot, o.oname
             FROM monitor mn
             JOIN organisations o ON mn.oid = o.oid
             JOIN activity a ON o.oid = a.oid
             WHERE CAST(mn.mid AS CHAR) = CAST(? AS CHAR)
-            ORDER BY a.date ASC
         ");
-        $alertStmt->bind_param("s", $studentUid);
-        $alertStmt->execute();
-        $alertRes = $alertStmt->get_result();
-        $monitoredActivities = $alertRes->fetch_all(MYSQLI_ASSOC);
-        $alertStmt->close();
-        
-        $currentTime = new DateTime('now');
+        $monitorStmt->bind_param("s", $studentUid);
+        $monitorStmt->execute();
+        $monitorRes = $monitorStmt->get_result();
+        $monitoredActivities = $monitorRes->fetch_all(MYSQLI_ASSOC);
+        $monitorStmt->close();
 
         foreach ($monitoredActivities as $act) {
             $aid = intval($act['aid']);
-
-            // Skip if this student has already visited this activity's attendance page
-            if (in_array($aid, $visitedAids, true)) {
-                continue;
-            }
-
             $actDateObj = new DateTime($act['date']);
             $todayObj = new DateTime($currentTime->format('Y-m-d'));
-            
             $diffDays = (int)$todayObj->diff($actDateObj)->format('%r%a');
-            $showAlert = false;
 
-            // Show alert if activity date is in the past, today, or tomorrow ($diffDays <= 1)
-            if ($diffDays <= 1) {
-                $showAlert = true;
-            }
-
-            if ($showAlert) {
-                $monitorAlerts[] = [
-                    'aid' => $aid,
-                    'act_name' => $act['aname'],
-                    'org_name' => $act['oname'],
-                    'timeslot' => $act['timeslot']
-                ];
+            // Type 1: Record attendance warning for Past/Ended activities ($diffDays < 0), hidden if visited
+            if ($diffDays < 0) {
+                if (!in_array($aid, $visitedAids, true)) {
+                    // Prevent duplicate entries if a monitor is also a member
+                    $exists = false;
+                    foreach ($attendanceAlerts as $existing) {
+                        if ($existing['aid'] === $aid) { $exists = true; break; }
+                    }
+                    if (!$exists) {
+                        $attendanceAlerts[] = [
+                            'aid' => $aid,
+                            'msg' => "Record attendance: " . $act['aname'] . " (" . $act['oname'] . " - " . $act['timeslot'] . ")"
+                        ];
+                    }
+                }
             }
         }
     }
@@ -153,6 +175,7 @@ try {
             display: flex;
             flex-direction: column;
             gap: 8px;
+            max-width: 400px;
         }
         .monitor-warning-box {
             background-color: #fef08a;
@@ -166,21 +189,19 @@ try {
             align-items: center;
             gap: 12px;
             box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-            animation: pulse-yellow 1.5s infinite;
+        }
+        .monitor-warning-box.attendance-box {
+            background-color: #fee2e2;
+            border-color: #dc2626;
+            color: #991b1b;
         }
         .monitor-warning-box a { color: inherit; text-decoration: none; }
         .monitor-warning-box a:hover { text-decoration: underline; }
         .close-alert-btn {
             background: none; border: none; font-size: 1rem; font-weight: bold;
-            cursor: pointer; color: inherit; opacity: 0.7;
+            cursor: pointer; color: inherit; opacity: 0.7; margin-left: auto;
         }
         .close-alert-btn:hover { opacity: 1; }
-
-        @keyframes pulse-yellow {
-            0% { box-shadow: 0 0 0 0 rgba(250, 204, 21, 0.4); }
-            70% { box-shadow: 0 0 0 8px rgba(250, 204, 21, 0); }
-            100% { box-shadow: 0 0 0 0 rgba(250, 204, 21, 0); }
-        }
 
         .app-body { flex: 1; display: flex; height: calc(100vh - 110px); position: relative; overflow: hidden; }
         .side-panel {
@@ -234,16 +255,24 @@ try {
 </head>
 <body>
 
-    <?php if (!empty($monitorAlerts)): ?>
-        <div class="monitor-alerts-container">
-            <?php foreach ($monitorAlerts as $alert): ?>
-                <div class="monitor-warning-box">
-                    <a href="attendance.php?aid=<?= htmlspecialchars($alert['aid']) ?>">⚠️ Upcoming/Ongoing: <?= htmlspecialchars($alert['act_name']) ?> (<?= htmlspecialchars($alert['org_name']) ?> - <?= htmlspecialchars($alert['timeslot']) ?>)</a>
-                    <button type="button" class="close-alert-btn" onclick="this.parentElement.remove()">×</button>
-                </div>
-            <?php endforeach; ?>
-        </div>
-    <?php endif; ?>
+    <!-- Floating Warning Containers -->
+    <div class="monitor-alerts-container">
+        <!-- Reminders for all members and monitors -->
+        <?php foreach ($reminders as $rem): ?>
+            <div class="monitor-warning-box">
+                <span>🔔 <?= htmlspecialchars($rem['msg']) ?></span>
+                <button type="button" class="close-alert-btn" onclick="this.parentElement.remove()">×</button>
+            </div>
+        <?php endforeach; ?>
+
+        <!-- Record Attendance warnings for monitors only (past activities only, hidden once visited) -->
+        <?php foreach ($attendanceAlerts as $att): ?>
+            <div class="monitor-warning-box attendance-box">
+                <a href="attendance.php?aid=<?= htmlspecialchars($att['aid']) ?>">⚠️ <?= htmlspecialchars($att['msg']) ?></a>
+                <button type="button" class="close-alert-btn" onclick="this.parentElement.remove()">×</button>
+            </div>
+        <?php endforeach; ?>
+    </div>
 
     <header>
         <div class="header-content">
