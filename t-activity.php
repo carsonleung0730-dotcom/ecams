@@ -407,16 +407,19 @@ $events = array_map(function($act) use ($managedOrgIds) {
 
         .panel-body-content { padding: 1.25rem; flex: 1; overflow-y: auto; display: flex; flex-direction: column; position: relative; }
 
+        .form-top-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 0.85rem; }
+
         .btn-return-back {
             display: inline-flex; align-items: center; gap: 4px; background-color: #f1f5f9; color: #334155;
             border: 1px solid #cbd5e1; border-radius: 4px; padding: 0.35rem 0.65rem; font-size: 0.8rem;
-            font-weight: 700; cursor: pointer; margin-bottom: 0.85rem; align-self: flex-start; transition: background-color 0.15s ease;
+            font-weight: 700; cursor: pointer; transition: background-color 0.15s ease;
         }
         .btn-return-back:hover { background-color: #e2e8f0; color: #0f172a; }
 
         .btn-attendance {
-            width: 100%; padding: 0.75rem; background-color: #dc2626; color: #ffffff;
-            font-size: 1rem; font-weight: 700; border: none; border-radius: 6px; cursor: pointer; text-align: center; text-decoration: none; display: none; margin-bottom: 1rem; transition: background-color 0.2s;
+            display: inline-flex; align-items: center; justify-content: center; background-color: #dc2626; color: #ffffff;
+            font-size: 0.8rem; font-weight: 700; border: none; border-radius: 4px; padding: 0.35rem 0.65rem; 
+            cursor: pointer; text-decoration: none; transition: background-color 0.2s;
         }
         .btn-attendance:hover { background-color: #b91c1c; }
 
@@ -566,9 +569,10 @@ $events = array_map(function($act) use ($managedOrgIds) {
                 </div>
 
                 <div id="activityFormView" style="display: none;">
-                    <button type="button" class="btn-return-back" id="returnBackBtn" style="display: none;">← Back</button>
-
-                    <a href="#" id="attendanceBtn" class="btn-attendance">Attendance</a>
+                    <div class="form-top-row">
+                        <button type="button" class="btn-return-back" id="returnBackBtn" style="display: none;">← Back</button>
+                        <a href="#" id="attendanceBtn" class="btn-attendance" style="display: none;">Attendance</a>
+                    </div>
 
                     <form id="activityForm">
                         <div class="field-group">
@@ -1040,8 +1044,9 @@ $events = array_map(function($act) use ($managedOrgIds) {
 
                 document.getElementById('datePickerRow').style.display = 'none';
 
-                if (isPast) {
-                    attendanceBtn.style.display = 'block';
+                // ONLY show attendance button for PAST activities AND if the teacher manages this organization (`isManaged`)
+                if (isPast && isManaged) {
+                    attendanceBtn.style.display = 'inline-flex';
                     attendanceBtn.href = 'attendance.php?aid=' + initialActivityData.aid;
                 } else {
                     attendanceBtn.style.display = 'none';
@@ -1098,7 +1103,7 @@ $events = array_map(function($act) use ($managedOrgIds) {
 
                 activitiesListView.style.display = 'none';
                 activityFormView.style.display = 'block';
-                returnBackBtn.style.display = 'none';
+                returnBackBtn.style.display = 'inline-flex';
 
                 actionBtn.textContent = 'Create Activity';
                 actionBtn.classList.add('btn-create-mode');
