@@ -1,7 +1,8 @@
 <?php
+require_once 'db.php';
 session_start();
 
-require_once 'db.php';
+
 
 if (!isset($conn) || !($conn instanceof mysqli)) {
     die("Database connection error.");
