@@ -1,24 +1,28 @@
 <?php
 require_once 'db.php';
 session_start();
-$jsonFile = 'visited_attendance.json';
+if (!isset($conn) || !($conn instanceof mysqli)) {
+    die("Database connection error.");
+}
 
-// Load existing data or create an empty array if file doesn't exist
+// 1. Define $userId first so it is available
+$userId = $_SESSION['uid'] ?? $_SESSION['user_id'] ?? $_SESSION['id'] ?? 2;
+
+// 2. JSON tracking code (now safely has access to $userId and $aid from $_GET)
+$jsonFile = 'visited_attendance.json';
 $visitedData = [];
 if (file_exists($jsonFile)) {
     $jsonContent = file_get_contents($jsonFile);
     $visitedData = json_decode($jsonContent, true) ?? [];
 }
 
-// Ensure the user has an entry array
 if (!isset($visitedData[$userId])) {
     $visitedData[$userId] = [];
 }
 
-// Add the activity ID if not already tracked
+$aid = $_GET['aid'] ?? 1;
 if (isset($aid) && !in_array(intval($aid), $visitedData[$userId], true)) {
     $visitedData[$userId][] = intval($aid);
-    // Save back to JSON file (creates it if it doesn't exist)
     file_put_contents($jsonFile, json_encode($visitedData, JSON_PRETTY_PRINT));
 }
 
