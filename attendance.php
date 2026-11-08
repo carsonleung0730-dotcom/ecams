@@ -3,11 +3,11 @@ session_start();
 
 require_once 'db.php';
 
-if (!isset($conn) \vert{}\vert{} !($conn instanceof mysqli)) {
+if (!isset($conn) || !($conn instanceof mysqli)) {
     die("Database connection error.");
 }
 
-$userId =$_SESSION['uid'] ?? $_SESSION['user_id'] ?? $_SESSION['id'] ?? 2;
+$userId = $_SESSION['uid'] ?? $_SESSION['user_id'] ?? $_SESSION['id'] ?? 2;
 
 $userInfo = [
     'uid' => $userId,
@@ -18,28 +18,32 @@ $userInfo = [
     'cid' => '1'
 ];
 
-$userStmt =$conn->prepare("SELECT uid, name, email, role, class, cid FROM users WHERE uid = ?");
-if ($userStmt) {$userStmt->bind_param("s", $userId);$userStmt->execute();
-    $userRes =$userStmt->get_result();
-    if ($row =$userRes->fetch_assoc()) {
-        $userInfo =$row;
+$userStmt = $conn->prepare("SELECT uid, name, email, role, class, cid FROM users WHERE uid = ?");
+if ($userStmt) {
+    $userStmt->bind_param("s", $userId);
+    $userStmt->execute();
+    $userRes = $userStmt->get_result();
+    if ($row = $userRes->fetch_assoc()) {
+        $userInfo = $row;
     }
     $userStmt->close();
 }
 
-$aid =$_GET['aid'] ?? 1;
+$aid = $_GET['aid'] ?? 1;
 $activity = null;
 
-$actStmt =$conn->prepare("
+$actStmt = $conn->prepare("
     SELECT a.aid, a.aname, a.date, a.room, a.timeslot, o.oname, o.oid
     FROM activity a
     JOIN organisations o ON a.oid = o.oid
     WHERE a.aid = ?
 ");
-if ($actStmt) {$actStmt->bind_param("i", $aid);$actStmt->execute();
-    $actRes =$actStmt->get_result();
-    if ($row =$actRes->fetch_assoc()) {
-        $activity =$row;
+if ($actStmt) {
+    $actStmt->bind_param("i", $aid);
+    $actStmt->execute();
+    $actRes = $actStmt->get_result();
+    if ($row = $actRes->fetch_assoc()) {
+        $activity = $row;
     }
     $actStmt->close();
 }
@@ -48,21 +52,26 @@ if (!$activity) {
     die("Activity not found. Requested Activity ID (aid): " . htmlspecialchars($aid));
 }
 
-$successMsg = '';$errorMsg = '';
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_attendance'])) {$attendanceData = $_POST['attendance'] ?? [];$conn->begin_transaction();
+$successMsg = '';
+$errorMsg = '';
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_attendance'])) {
+    $attendanceData = $_POST['attendance'] ?? [];
+    $conn->begin_transaction();
     try {
-        $updateStmt =$conn->prepare("
+        $updateStmt = $conn->prepare("
             UPDATE attendance 
             SET attend = ?, rate = ?, `s.rate` = ? 
             WHERE aid = ? AND sid = ?
         ");
 
-        foreach ($attendanceData as $sid =>$data) {
+        foreach ($attendanceData as $sid => $data) {
             $attend = isset($data['attend']) ? 1 : 0;
             $rate = max(0, min(10, intval($data['rate'] ?? 10)));
+            // PHP converts dots in POST keys to underscores, so we read s_rate from $_POST
             $sRate = max(0, min(10, intval($data['s_rate'] ?? 10)));
 
-            $updateStmt->bind_param("iiisi", $attend,$rate, $sRate,$aid, $sid);$updateStmt->execute();
+            $updateStmt->bind_param("iiisi", $attend, $rate, $sRate, $aid, $sid);
+            $updateStmt->execute();
         }
         $updateStmt->close();
 
@@ -72,23 +81,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_attendance']))
         header("Location: " . $redirectPage);
         exit();
     } catch (Exception $e) {
-        $conn->rollback();$errorMsg = "Failed to update attendance: " . $e->getMessage();
+        $conn->rollback();
+        $errorMsg = "Failed to update attendance: " . $e->getMessage();
     }
 }
 
 $members = [];
-$memStmt =$conn->prepare("
-    SELECT u.uid, u.name, at.attend, at.rate, at.`s.rate` AS s_rate
+$memStmt = $conn->prepare("
+    SELECT u.uid, u.name, at.attend, at.rate, at.`s.rate`
     FROM membership m
     JOIN users u ON m.sid = u.uid
     LEFT JOIN attendance at ON at.aid = ? AND at.sid = u.uid
     WHERE m.oid = ?
 ");
 if ($memStmt) {
-    $memStmt->bind_param("ii", $aid, $activity['oid']);$memStmt->execute();
-    $memRes =$memStmt->get_result();
-    while ($row =$memRes->fetch_assoc()) {
-        $members[] =$row;
+    $memStmt->bind_param("ii", $aid, $activity['oid']);
+    $memStmt->execute();
+    $memRes = $memStmt->get_result();
+    while ($row = $memRes->fetch_assoc()) {
+        $members[] = $row;
     }
     $memStmt->close();
 }
@@ -327,12 +338,12 @@ $returnDashboard = (strtolower($userInfo['role']) === 'teacher') ? 'teacher.php'
                             <?php if (empty($members)): ?>
                                 <tr><td colspan="5" style="text-align: center; color: #64748b;">No members found in this organisation.</td></tr>
                             <?php else: ?>
-                                <?php foreach ($members as$m): ?>
+                                <?php foreach ($members as $m): ?>
                                     <?php 
-                                        $uid =$m['uid'];
-                                        $attendVal =$m['attend'] ?? 0;
+                                        $uid = $m['uid'];
+                                        $attendVal = $m['attend'] ?? 0;
                                         $rateVal = $m['rate'] !== null ? $m['rate'] : 10;
-                                        $sRateVal = $m['s_rate'] !== null ? $m['s_rate'] : 10;
+                                        $sRateVal = $m['s.rate'] !== null ? $m['s.rate'] : 10;
                                     ?>
                                     <tr>
                                         <td><?= htmlspecialchars($uid) ?></td>
@@ -345,16 +356,16 @@ $returnDashboard = (strtolower($userInfo['role']) === 'teacher') ? 'teacher.php'
                                         </td>
                                         <td>
                                             <div class="stepper-container">
-                                                <button type="button" class="stepper-btn" data-dir="-1">&#8249;</button>
+                                                <button type="button" class="stepper-btn" data-dir="-1">‹</button>
                                                 <input type="number" name="attendance[<?= $uid ?>][rate]" class="stepper-input" value="<?= $rateVal ?>" min="0" max="10">
-                                                <button type="button" class="stepper-btn" data-dir="1">&#8250;</button>
+                                                <button type="button" class="stepper-btn" data-dir="1">›</button>
                                             </div>
                                         </td>
                                         <td>
                                             <div class="stepper-container">
-                                                <button type="button" class="stepper-btn" data-dir="-1">&#8249;</button>
+                                                <button type="button" class="stepper-btn" data-dir="-1">‹</button>
                                                 <input type="number" name="attendance[<?= $uid ?>][s_rate]" class="stepper-input" value="<?= $sRateVal ?>" min="0" max="10">
-                                                <button type="button" class="stepper-btn" data-dir="1">&#8250;</button>
+                                                <button type="button" class="stepper-btn" data-dir="1">›</button>
                                             </div>
                                         </td>
                                     </tr>
