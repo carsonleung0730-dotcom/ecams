@@ -5,8 +5,8 @@ session_start();
 
 // Ensure database connection is active
 if (isset($conn) && $conn instanceof mysqli) {
-    $sid = 1; // User ID (student ID)
-    $oid = 1; // Organization ID
+    $sid = 3; // User ID (student ID)
+    $oid = 2; // Organization ID
 
     // Prepare delete statement using 'sid' as your foreign key to the user table
     $stmt = $conn->prepare("DELETE FROM membership WHERE sid = ? AND oid = ?");
