@@ -414,6 +414,12 @@ $events = array_map(function($act) use ($managedOrgIds) {
         }
         .btn-return-back:hover { background-color: #e2e8f0; color: #0f172a; }
 
+        .btn-attendance {
+            width: 100%; padding: 0.75rem; background-color: #dc2626; color: #ffffff;
+            font-size: 1rem; font-weight: 700; border: none; border-radius: 6px; cursor: pointer; text-align: center; text-decoration: none; display: none; margin-bottom: 1rem; transition: background-color 0.2s;
+        }
+        .btn-attendance:hover { background-color: #b91c1c; }
+
         .activity-cards-list { display: flex; flex-direction: column; gap: 0.75rem; margin-top: 0.25rem; }
         .fc-v-event, .fc-h-event, .fc-daygrid-event { background-color: #76787e !important; border-radius: 4px; }
 
@@ -562,6 +568,8 @@ $events = array_map(function($act) use ($managedOrgIds) {
                 <div id="activityFormView" style="display: none;">
                     <button type="button" class="btn-return-back" id="returnBackBtn" style="display: none;">← Back</button>
 
+                    <a href="#" id="attendanceBtn" class="btn-attendance">Attendance</a>
+
                     <form id="activityForm">
                         <div class="field-group">
                             <label for="field_aid">Activity ID (aid)</label>
@@ -660,6 +668,7 @@ $events = array_map(function($act) use ($managedOrgIds) {
             var activityCardsContainer = document.getElementById('activityCardsContainer');
             var activityFormView = document.getElementById('activityFormView');
             var returnBackBtn = document.getElementById('returnBackBtn');
+            var attendanceBtn = document.getElementById('attendanceBtn');
 
             var actionBtn = document.getElementById('actionBtn');
             var deleteBtn = document.getElementById('deleteBtn');
@@ -1031,6 +1040,13 @@ $events = array_map(function($act) use ($managedOrgIds) {
 
                 document.getElementById('datePickerRow').style.display = 'none';
 
+                if (isPast) {
+                    attendanceBtn.style.display = 'block';
+                    attendanceBtn.href = 'attendance.php?aid=' + initialActivityData.aid;
+                } else {
+                    attendanceBtn.style.display = 'none';
+                }
+
                 if (!isManaged) {
                     formInputs.forEach(inp => inp.disabled = true);
                     actionBtn.style.display = 'none';
@@ -1052,6 +1068,8 @@ $events = array_map(function($act) use ($managedOrgIds) {
 
                 currentMode = 'create';
                 activeEventId = null;
+
+                attendanceBtn.style.display = 'none';
 
                 formInputs.forEach(inp => inp.disabled = false);
                 document.getElementById('field_aid').disabled = true;
@@ -1115,6 +1133,7 @@ $events = array_map(function($act) use ($managedOrgIds) {
             returnBackBtn.addEventListener('click', function() {
                 activityFormView.style.display = 'none';
                 activitiesListView.style.display = 'block';
+                attendanceBtn.style.display = 'none';
                 calendarEl.classList.remove('calendar-active-mode-blue');
                 calendarEl.classList.add('calendar-active-mode-red');
                 if (selectedDates.length > 1) {
@@ -1127,6 +1146,7 @@ $events = array_map(function($act) use ($managedOrgIds) {
             tabExisting.addEventListener('click', function() {
                 calendarEl.classList.remove('calendar-active-mode-blue');
                 calendarEl.classList.add('calendar-active-mode-red');
+                attendanceBtn.style.display = 'none';
                 
                 if (selectedDates.length > 1) {
                     selectedDates = [currentSelectedDate || selectedDates[0]];
@@ -1147,6 +1167,7 @@ $events = array_map(function($act) use ($managedOrgIds) {
             function closeRightPanel() {
                 panel.classList.remove('active');
                 deleteBtn.style.display = 'none';
+                attendanceBtn.style.display = 'none';
                 resetPanelPosition();
                 unselectCalendarDate();
             }
@@ -1225,10 +1246,9 @@ $events = array_map(function($act) use ($managedOrgIds) {
                     method: 'POST',
                     body: formData
                 })
-                .then(response => response.text()) // Read as raw text first
+                .then(response => response.text())
                 .then(text => {
-                console.log("RAW SERVER RESPONSE:", text); // Check your F12 Console for this output!
-                return JSON.parse(text); // Try parsing manually afterwards
+                    return JSON.parse(text);
                 })
                 .then(data => {
                     if (data.status === 'success') {
